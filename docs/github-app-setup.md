@@ -78,6 +78,22 @@ The factory then does the rest (build step 1):
 - `softwarp token` creates a 1-hour installation token from the key and gives it to `gh` (`GH_TOKEN`) and to git (a credential helper).
 - Agent worktrees commit as `<slug>[bot] <<bot-user-id>+<slug>[bot]@users.noreply.github.com>`.
 
+## G. Make "never merge" a GitHub rule (any time)
+
+The app has Pull requests write access, so without this rule it could merge any PR whose checks pass. Require one approving review on `main`. A PR's author cannot approve it, so an agent can never merge its own PR. You stay an admin and can still merge.
+
+- **Browser:** Cluckwork → Settings → Branches → the `main` rule → **Require a pull request before merging** → set **Require approvals** to 1 and turn on **Require approval of the most recent reviewable push**.
+- **Or, before part D** (it needs your admin token):
+  ```bash
+  gh api -X PATCH repos/mforce/cluckwork/branches/main/protection/required_pull_request_reviews \
+    -F required_approving_review_count=1 -F require_last_push_approval=true
+  ```
+- **Verify:**
+  ```bash
+  gh api repos/mforce/cluckwork/branches/main/protection/required_pull_request_reviews \
+    --jq '{required_approving_review_count, require_last_push_approval}'
+  ```
+
 ## F. First-PR checks
 
 - The PR author shows as `<slug>[bot]`.
