@@ -1,8 +1,41 @@
 # Build step 1: grounding (2026-10-11)
 
-**Task.** Sketch the types, signatures and module map for build step 1 of the software factory: one issue goes through stations 0–4 (intake, triage, spec, implement, publish), driven by a deterministic CLI named `factory`, written in C# on .NET 10 and published as a Native AOT binary. Read `~/dev/software-factory/DESIGN.md` §4, §7, §8, §9, §11, §12, §14, §17, §18, §19 and §20 first. That document is the spec. This file holds the facts that were checked on this machine.
+**Task.** Sketch the types, signatures and module map for build step 1 of the software factory (softwarp): one issue goes through stations 0–4 (intake, triage, spec, implement, publish), driven by a deterministic CLI, written in C# on .NET 10 and published as a Native AOT binary. (The CLI was renamed from `factory` to `softwarp` after the design runners started; read `factory` below as `softwarp`.) Read `~/dev/software-factory/DESIGN.md` §4, §7, §8, §9, §11, §12, §14, §17, §18, §19 and §20 first. That document is the spec.
 
-## Verified facts
+This file has two parts:
+- **Part 1, portable assumptions:** what the design must hold on ANY machine, harness, model and stack.
+- **Part 2, this machine:** facts about the machine where the first bindings and the pilot run.
+
+**Rule: core types MUST NOT name any tool from Part 2.** Core types are stations, state, artifacts, approvals and CLI verbs. Only binding implementations may name a tool, for example a `ClaudeCliHarness` or a `PaseoSpawner`. A new machine adds or picks bindings; it never edits the core.
+
+## Part 1: portable assumptions (any machine)
+
+- **Harness.** Any agent CLI that can run one prompt headless in a given directory, with a model and environment variables, and return its final text. Some harnesses also enforce a JSON schema on the output. Either way, the factory validates the output itself.
+- **Skills.** A harness may or may not support skills. Where it does, a slash command in the prompt starts a skill, even one that only a user prompt can invoke (Part 2 shows this on two harnesses). Every brief MUST also work without skills, through a prompt-file fallback.
+- **Agent host.** A tab or process manager (Paseo, Orca) may or may not exist. The fallback is a plain child process with a log file.
+- **Forge.** git, plus a forge API: GitHub in v1, a pluggable `tracker` later. Agents and the orchestrator act under their own scoped, short-lived identity, never the maintainer's.
+- **OS user.** Agents may run as the same OS user as the maintainer. Any local file the maintainer can write, an agent can write. Approvals therefore MUST NOT rest on local files alone.
+- **Runtime.** The CLI is one self-contained binary that needs no runtime installed. Bindings are compiled in and chosen by detection or configuration; no plugins are loaded by reflection.
+- **Repo facts** come from the repo (`WORKFLOW.md`, then AGENTS.md, then CI files, then manifests), never from the factory's code.
+
+### Constraints from DESIGN (non-negotiable)
+
+- **Deterministic path.**
+  - The state machine is code.
+  - Gates are commands with exit codes.
+  - Every agent artifact is validated against its schema.
+  - Every input is pinned and recorded per run: the brief template version, skill versions, model ids, and the `WORKFLOW.md` commit.
+- **State** lives in tracker labels (`factory:*`) and in the run directory `~/.factory/runs/<repo>/<issue>/` (`progress.md`, `decisions.tsv`, `children.tsv`, `metrics.jsonl`, `holdout/`). Stations are idempotent. A run resumes from the label, the branch, the PR and the run directory.
+- **Stall detection** counts only side effects.
+- **Least privilege.**
+  - Only the orchestrator pushes, labels and comments.
+  - The `tracker` capability has no `create`.
+  - An approval counts only under the maintainer's identity: a tracker comment by the maintainer's login, or the maintainer's own words in `decisions.tsv`.
+  - Holdouts are stored outside the implementer's worktree.
+- **`WORKFLOW.md`** in each repo: YAML front matter plus a markdown body (Symphony format). Runners may propose another format if they give a reason.
+- **Scope of step 1:** stations 0–4 only. Verifiers, the review loop, `factory doctor`, scheduling and metrics dashboards are out of scope. The design must not block them.
+
+## Part 2: this machine (checked 2026-10-11)
 
 **Harness CLIs**
 - Claude Code 2.1.296:
@@ -65,23 +98,6 @@ Follows #1153, #1154, #1215.
 - The maintainer approves every spec (§18 row 2).
 - Agents run as the maintainer's Unix user.
 
-## Constraints from DESIGN (non-negotiable)
-
-- **Deterministic path.**
-  - The state machine is code.
-  - Gates are commands with exit codes.
-  - Every agent artifact is validated against its schema.
-  - Every input is pinned and recorded per run: the brief template version, skill versions, model ids, and the `WORKFLOW.md` commit.
-- **State** lives in tracker labels (`factory:*`) and in the run directory `~/.factory/runs/<repo>/<issue>/` (`progress.md`, `decisions.tsv`, `children.tsv`, `metrics.jsonl`, `holdout/`). Stations are idempotent. A run resumes from the label, the branch, the PR and the run directory.
-- **Stall detection** counts only side effects.
-- **Least privilege.**
-  - Only the orchestrator pushes, labels and comments.
-  - The `tracker` capability has no `create`.
-  - An approval counts only under the maintainer's identity: a tracker comment by the maintainer's login, or the maintainer's own words in `decisions.tsv`.
-  - Holdouts are stored outside the implementer's worktree.
-- **`WORKFLOW.md`** in each repo: YAML front matter plus a markdown body (Symphony format). Runners may propose another format if they give a reason.
-- **Scope of step 1:** stations 0–4 only. Verifiers, the review loop, `factory doctor`, scheduling and metrics dashboards are out of scope. The design must not block them.
-
 ## What the sketch must settle
 
 1. The CLI command surface: what the coordinator and the maintainer type.
@@ -92,3 +108,4 @@ Follows #1153, #1154, #1215.
 6. How an approval is detected, and how it is kept from being forged.
 7. How `WORKFLOW.md` is parsed under AOT.
 8. The project layout, and how tests replace capabilities with fakes.
+9. How a machine's bindings are chosen (detection, config) without editing core types.
