@@ -97,11 +97,11 @@ Run once per repo, then on a schedule.
 | 3 | Implement | skill chosen by class; writes only in its worktree | commits | build clean, targeted tests pass |
 | 4 | Publish | cleans the code, pushes, opens the PR, writes the PR body | PR linked to spec | PR exists |
 | 5 | Prove | verifier swarm at the head SHA (lanes below) | verdict pinned to the SHA | clean verdict, CI green |
-| 6 | Review | external reviewer loop (§12); the reviewer uses a different vendor from the implementer | threads answered | reviewer quiet, or stop rule hit |
+| 6 | Review | **optional, per repo** (`review:` in `WORKFLOW.md`): `bot` runs the external reviewer loop (§12); `local` runs one read-only review by another vendor's model or the free GLM lane; `none` relies on station 5 and the maintainer's own review | threads answered | `bot`: reviewer quiet, or stop rule hit. `local`: findings triaged. `none`: passes at once |
 | 7 | Handoff | rebases onto trunk; the verdict must cover the trunk-current SHA; notifies the maintainer | PR ready to merge | the maintainer merges (rungs 0–2) |
 | 8 | Retro | after merge or abandon | proposals for environment changes | written to the buffer (§13) |
 
-Stations 5 and 6 start as soon as the PR opens. They run in parallel with CI.
+Stations 5 and 6 start as soon as the PR opens. They run in parallel with CI. With `review: none`, station 5 (verifiers and the scope judge) is the only automated check before the maintainer reviews.
 
 **Station 5 lanes** (from pstack `autopilot-full`):
 - re-run the gates at the head SHA;
@@ -164,7 +164,7 @@ Every station is idempotent. A run resumes from the label, the branch, the PR an
 | `status(handle)` | checked live | `get_agent_status` | `pgrep` + log tail |
 | `send(handle, msg)` | starts with `[coordinator]` | `send_agent_prompt` | resume the session |
 | `verify` | run the app as a user would | the repo's verification skill | a `run` command from `WORKFLOW.md` |
-| `review(diff)` | findings list from another vendor, posted under the reviewer's own identity; the orchestrator counts rounds from the forge, not from self-reports | the detected bot (CodeRabbit), Codex if rate-limited | a second agent from another vendor |
+| `review(diff)` | **optional.** Findings list from another vendor, posted under the reviewer's own identity; the orchestrator counts rounds from the forge, not from self-reports | `none` today: the GitHub bots (CodeRabbit, Codex) are switched off because of token cost and rate limits. `local` uses Codex or GLM on demand | a second agent from another vendor, or none |
 | `clean_code` / `clean_prose` | remove slop | `pstack:deslop` / `pstack:unslop` | prompt files |
 | `notify` | tell the maintainer | PushNotification / Paseo | issue comment + stdout |
 | `schedule` | run on an interval | Paseo schedule / CronCreate | cron or a systemd timer |
@@ -227,6 +227,7 @@ commands:
   run: …
   services_up: …
 verify_skill: .agents/skills/verify
+review: none          # bot | local | none
 wip_limit: 3
 routines:
   - name: banned-patterns
@@ -248,7 +249,7 @@ Each rule is **enforced** (code blocks the action) or **instructed** (prompt onl
 | Never file issues without approval; offer a batch at the end. | enforced (`tracker` has no `create`) |
 | Every coordinator prompt starts with `[coordinator]`. | enforced (`send` adds it) |
 | Push when the build is clean and targeted tests pass, then prove. Fixes are new commits, never force-pushes. | enforced (station order) |
-| Review loop: find the reviewer, read both surfaces, reply on the thread, trigger the next round. Stop after 2 rounds in a row with no product defect. | enforced (orchestrator counts rounds) + instructed (triage of findings) |
+| When a repo uses `review: bot`: find the reviewer, read both surfaces, reply on the thread, trigger the next round. Stop after 2 rounds in a row with no product defect. | enforced (orchestrator counts rounds) + instructed (triage of findings) |
 | Every background job states what it is, its output path, a watch command and an expected duration. | enforced by `spawn` |
 | Images go up as attachments, never on branches. | enforced by `attach` |
 | Call the user "the maintainer". | instructed |
