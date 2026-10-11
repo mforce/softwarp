@@ -32,14 +32,14 @@ Parts A to C change nothing for running agents, so they can be done at any time.
 1. On the app page, note the **App ID**.
 2. Under **Private keys**, click **Generate a private key**. Move the downloaded file and lock it down:
    ```bash
-   mkdir -p ~/.config/factory && mv ~/Downloads/<app-name>.*.private-key.pem ~/.config/factory/app.pem && chmod 600 ~/.config/factory/app.pem
+   mkdir -p ~/.config/softwarp && mv ~/Downloads/<app-name>.*.private-key.pem ~/.config/softwarp/app.pem && chmod 600 ~/.config/softwarp/app.pem
    ```
    Never paste the key into a chat or commit it.
 
 ## C. Install the app
 
 1. On the app page, click **Install App**, then choose your account.
-2. Choose **Only select repositories**, then `mforce/cluckwork` (add the factory repo later).
+2. Choose **Only select repositories**, then `mforce/cluckwork` (add `mforce/softwarp` later).
 3. Note the **installation ID**: the number at the end of the URL, `https://github.com/settings/installations/<id>`.
 4. Check that the app is **not** a bypass actor on any ruleset (Settings → Rules → Rulesets). It is not one by default.
 
@@ -71,11 +71,11 @@ Tell the factory session these values (not the key itself):
 - App ID
 - installation ID
 - app slug
-- key path (`~/.config/factory/app.pem`)
+- key path (`~/.config/softwarp/app.pem`)
 - your Workflows choice
 
 The factory then does the rest (build step 1):
-- `factory token` creates a 1-hour installation token from the key and gives it to `gh` (`GH_TOKEN`) and to git (a credential helper).
+- `softwarp token` creates a 1-hour installation token from the key and gives it to `gh` (`GH_TOKEN`) and to git (a credential helper).
 - Agent worktrees commit as `<slug>[bot] <<bot-user-id>+<slug>[bot]@users.noreply.github.com>`.
 
 ## F. First-PR checks

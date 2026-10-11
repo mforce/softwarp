@@ -1,4 +1,4 @@
-# Software Factory — Design
+# softwarp — Software Factory Design
 
 Status: draft · 2026-10-09
 
@@ -61,7 +61,7 @@ Only the bottom row changes between machines and repos.
 - Every input is pinned and recorded per run: the brief template version, skill versions, model ids, and the `WORKFLOW.md` commit. A run can be replayed with the same inputs.
 - Mechanical parts of skills move into scripts. poteto's verification CLI exists for this reason: without it, every agent rebuilt its own tooling, each in a different way.
 - Where orchestration needs judgment (for example, grouping 30 related issues), the orchestrator calls an agent for that one decision and stores the result as a file.
-- **The state machine is code; the trigger can be anything.** A person, a schedule, or an LLM coordinator may start each transition (`factory advance <run>`). The CLI refuses any transition whose gate has not passed, and any artifact that fails its schema. This is how an existing coordinator agent can drive the factory without making the path non-deterministic. It follows poteto's pattern of a deterministic CLI inside an agent's workflow.
+- **The state machine is code; the trigger can be anything.** A person, a schedule, or an LLM coordinator may start each transition (`softwarp advance <run>`). The CLI refuses any transition whose gate has not passed, and any artifact that fails its schema. This is how an existing coordinator agent can drive the factory without making the path non-deterministic. It follows poteto's pattern of a deterministic CLI inside an agent's workflow.
 
 ## 5. Trust ladder
 
@@ -123,9 +123,9 @@ The number of verifiers is tunable: 1 for a two-way door, more for a one-way doo
 - Each blocking finding needs a failing test that covers every site with the same defect, or a repro receipt if no test can show it.
 - After 2 fixes, if a blocking finding still remains, the PR is reported as blocked, with the evidence. The maintainer chooses: another round, a narrower PR, or close.
 
-**Failure paths.** A station returns `bounce(station, reason)` or `escalate(reason)`. After 2 revision cycles at one station, the item escalates with `factory:needs-human`. An escalation is written as a short questionnaire (`to-questionnaire`), not a long thread.
+**Failure paths.** A station returns `bounce(station, reason)` or `escalate(reason)`. After 2 revision cycles at one station, the item escalates with `softwarp:needs-human`. An escalation is written as a short questionnaire (`to-questionnaire`), not a long thread.
 
-**Holdout scenarios** (from StrongDM) are written by the maintainer or by a spec agent. They are stored outside the implementer's worktree, in `~/.factory/runs/<repo>/<issue>/holdout/`.
+**Holdout scenarios** (from StrongDM) are written by the maintainer or by a spec agent. They are stored outside the implementer's worktree, in `~/.softwarp/runs/<repo>/<issue>/holdout/`.
 
 ## 8. Work item state
 
@@ -133,16 +133,16 @@ State lives in the tracker. Labels map to Matt's `triage` states:
 
 | Label | Meaning |
 |-------|---------|
-| `factory:needs-triage` | not evaluated yet |
-| `factory:needs-info` | waiting for the reporter |
-| `factory:ready` | ready for an agent (`ready-for-agent`) |
-| `factory:needs-human` | needs the maintainer; the comment says why |
-| `factory:active` | claimed; a comment names the run id and the agent |
-| `factory:review` | in stations 5–6 |
-| `factory:done` | handed off |
-| `factory:wontfix` | closed with a reason |
+| `softwarp:needs-triage` | not evaluated yet |
+| `softwarp:needs-info` | waiting for the reporter |
+| `softwarp:ready` | ready for an agent (`ready-for-agent`) |
+| `softwarp:needs-human` | needs the maintainer; the comment says why |
+| `softwarp:active` | claimed; a comment names the run id and the agent |
+| `softwarp:review` | in stations 5–6 |
+| `softwarp:done` | handed off |
+| `softwarp:wontfix` | closed with a reason |
 
-Per run, in `~/.factory/runs/<repo>/<issue>/`:
+Per run, in `~/.softwarp/runs/<repo>/<issue>/`:
 - `progress.md`: a handoff file, so a new session or context window can continue (`handoff`);
 - `decisions.tsv`: one line per decision (`show-me-your-work`);
 - `children.tsv`: each sub-agent's id, expected runtime and state, for stall detection;
@@ -159,7 +159,7 @@ Every station is idempotent. A run resumes from the label, the branch, the PR an
 | `source` | `sync` → NDJSON items; `done <id>` (noodle's adapter contract) | `gh` issues (v1) | plugins later: Slack, email, Linear, local `issues/*.md` |
 | `tracker` | read, comment, label, link PR; **no create** | `gh` | same plugins |
 | `identity` | agents act under their own forge identity, never the maintainer's token | a GitHub App or a machine user | a separate token per role |
-| `isolate` | one workspace per item | `git worktree` in `~/.factory-slices/<repo>/<id>` | same |
+| `isolate` | one workspace per item | `git worktree` in `~/.softwarp-slices/<repo>/<id>` | same |
 | `spawn(role, tier, brief, ws)` | start an agent with least privilege for its role | Paseo tab (never a workspace) | `claude -p` / `codex exec` with a log file |
 | `status(handle)` | checked live | `get_agent_status` | `pgrep` + log tail |
 | `send(handle, msg)` | starts with `[coordinator]` | `send_agent_prompt` | resume the session |
@@ -196,7 +196,7 @@ Every station is idempotent. A run resumes from the label, the branch, the PR an
 
 ## 10. Binding discovery
 
-`factory doctor` probes the machine and writes `~/.config/factory/bindings.yaml`:
+`softwarp doctor` probes the machine and writes `~/.config/softwarp/bindings.yaml`:
 
 - harness CLIs on PATH (`claude`, `codex`, `pi`, `hermes`, …);
 - orchestrators (Paseo, Orca, noodle);
@@ -264,13 +264,13 @@ From poteto's inner and outer loops.
 - **Gardening loop:** scheduled scanners (banned patterns, code quality) **append to a buffer**. They do not fix and do not file issues. Every few days an agent clusters the buffer, and the maintainer picks which clusters become work. This also fits the rule that issues need approval.
 - **Feedback loop:** a retro after each run, plus periodic transcript mining (`pstack:reflect`, `recall`). Both look for repeated failures and maintainer interventions, and propose lint rules, types, scripts or skill changes. The proposals go to the buffer.
 
-The buffer lives in `~/.factory/buffer/<repo>.md`.
+The buffer lives in `~/.softwarp/buffer/<repo>.md`.
 
 ## 14. Layout
 
 ```
 factory/
-  bin/factory             orchestrator: run, doctor, onboard, status
+  bin/softwarp             orchestrator: run, doctor, onboard, status
   PROCESS.md              stations and gates (the spec)
   POLICY.md
   schemas/                artifact schemas per station
@@ -280,14 +280,14 @@ factory/
     codex.yaml
     bare.yaml
   templates/WORKFLOW.md
-  skills/factory/SKILL.md entry point (Agent Skills format)
+  skills/softwarp/SKILL.md entry point (Agent Skills format)
 AGENTS.md                 entry point for harnesses without skills
 ```
 
 ## 15. Triggers
 
-- **Manual:** `factory run 12 15 18` (or `/factory` in a harness that has skills).
-- **Scheduled:** every N minutes, claim `factory:ready` items up to the WIP limit. Verifier and reviewer agents do not count against the limit.
+- **Manual:** `softwarp run 12 15 18` (or `/softwarp` in a harness that has skills).
+- **Scheduled:** every N minutes, claim `softwarp:ready` items up to the WIP limit. Verifier and reviewer agents do not count against the limit.
 - **Routines:** the gardening scanners from `WORKFLOW.md`.
 - **Host:** this machine for v1. All state is in the tracker and the run dir, so moving to an always-on host later only needs a new binding.
 
@@ -308,7 +308,7 @@ These numbers decide when a repo moves up a trust rung.
 1. `PROCESS.md`, schemas, briefs, and an orchestrator skeleton. Run one issue through stations 0–4 by hand on this machine. First check that a headless call (`claude -p "/to-spec …"`) can start a skill that only a user prompt can invoke.
 2. Onboarding: stack detect, `WORKFLOW.md`, readiness check, verification skill.
 3. Stations 5–7: verifier swarm, reviewer loop, handoff.
-4. `factory doctor` and the bare binding. Prove it on a second harness (Codex).
+4. `softwarp doctor` and the bare binding. Prove it on a second harness (Codex).
 5. Schedule, labels, WIP limit, stall detection.
 6. Gardening and feedback loops, metrics.
 
@@ -323,7 +323,7 @@ These numbers decide when a repo moves up a trust rung.
 | 5 | Is the workflow deterministic? | The process is (§4). The agents' output is not. |
 | 6 | Default trust rung? | 1, supervised. |
 | 7 | Matt Pocock's new skills? | Installed (2026-10-09) in `~/.agents/skills`. |
-| 8 | Pilot (build step 1)? | Cluckwork #1223: a growth cap for legacy files and a 1,500-line cap for test files. The maintainer's decision is recorded in the issue, and its acceptance criteria are checkable mutations. It re-runs the case that failed the pilot's acceptance check (§20). The Platform Hardening coordinator (Paseo agent `0e442060…`) drives it through the `factory` CLI, after its in-flight PRs merge. |
+| 8 | Pilot (build step 1)? | Cluckwork #1223: a growth cap for legacy files and a 1,500-line cap for test files. The maintainer's decision is recorded in the issue, and its acceptance criteria are checkable mutations. It re-runs the case that failed the pilot's acceptance check (§20). The Platform Hardening coordinator (Paseo agent `0e442060…`) drives it through the `softwarp` CLI, after its in-flight PRs merge. |
 | 9 | Agent identity? | A GitHub App. The maintainer logs out of `gh` on this machine. Agents get short-lived installation tokens. Git pushes over HTTPS through the `gh` credential helper and there are no SSH keys, so the logout also removes the maintainer's identity from `git push`. |
 | 10 | Orchestrator language? | C# on .NET 10, released as a Native AOT binary (one per OS, built in CI). The maintainer owns and reviews it in their main language, and it can use the same build guards as Cluckwork. |
 
