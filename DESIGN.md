@@ -1,0 +1,361 @@
+# Software Factory — Design
+
+Status: draft · 2026-10-09
+
+## 1. Goal
+
+Turn an issue into a reviewed PR that is ready to merge, on any repo, harness, model and tech stack. Agents do the work. The maintainer decides scope, approves specs, and merges.
+
+The factory is a **process**, not a product. It is written as a harness-agnostic spec plus a small deterministic orchestrator. On each machine it binds to whatever tools that machine has.
+
+**Non-goals (v1):** auto-merging, deploying, replacing CI, building a coding agent.
+
+## 2. Principles
+
+1. **Code does the mechanics; agents do the judgment.** Every step that can be a script is a script (§4).
+2. **Verification is the lever.** An agent that can run the app and see the result can iterate without the maintainer. Each repo gets a verification skill before the factory runs on it (§6).
+3. **Fix the environment, not the agent.** When agents repeat a mistake, change the repo (lint rule, type, convention, skill) so the mistake becomes impossible. Do not add more prose.
+4. **Context, not control.** Agents fetch their own context from real sources. Each time the maintainer has to pass context by hand, record it as a bottleneck to remove.
+5. **Gates check evidence, not claims.** "Tests pass" means the orchestrator ran the tests.
+6. **The maintainer owns merge and issue filing.** Trust grows one rung at a time (§5).
+7. **Push early, prove while CI runs.**
+8. **Use the cheapest model tier that passes the gate.**
+
+## 3. Layers
+
+```
+┌───────────────────────────────────────────────┐
+│ Policy        portable rules, enforced as gates │
+├───────────────────────────────────────────────┤
+│ Orchestrator  deterministic: state, gates, I/O  │  ← code
+├───────────────────────────────────────────────┤
+│ Stations      judgment steps, schema'd output   │  ← agents
+├───────────────────────────────────────────────┤
+│ Capabilities  abstract verbs (spawn, verify, …) │
+├───────────────────────┬───────────────────────┤
+│ Bindings (machine)    │ WORKFLOW.md (repo)    │
+└───────────────────────┴───────────────────────┘
+```
+
+Only the bottom row changes between machines and repos.
+
+## 4. Determinism
+
+**The process is deterministic. The agents' output is not.** Harness CLIs expose no seed, and the same prompt can produce different code. So the factory makes the *path* fixed and lets the gates control quality.
+
+| Fixed by code (orchestrator) | Left to agents (judgment) |
+|---|---|
+| state machine and label transitions | triage: class, size, door, grouping |
+| worktree create and remove | spec and holdout scenarios |
+| spawning agents from versioned brief templates | implementation |
+| running gates (build, test, lint) and reading exit codes | live verification on the real app |
+| push, PR create, CI wait | review-finding triage and fixes |
+| collecting review findings from both surfaces (dev-rules, rules 0–1) | retro and environment proposals |
+| stall detection, retries, escalation | |
+| metrics and cost accounting | |
+
+**Rules**
+
+- An agent call is a function: brief in, artifact out. Each artifact has a schema (JSON, or markdown with required headings). The orchestrator validates it. An invalid artifact gets one retry, then the item escalates.
+- A gate is a command with an exit code. An agent's statement is never a gate.
+- Every input is pinned and recorded per run: the brief template version, skill versions, model ids, and the `WORKFLOW.md` commit. A run can be replayed with the same inputs.
+- Mechanical parts of skills move into scripts. poteto's verification CLI exists for this reason: without it, every agent rebuilt its own tooling, each in a different way.
+- Where orchestration needs judgment (for example, grouping 30 related issues), the orchestrator calls an agent for that one decision and stores the result as a file.
+- **The state machine is code; the trigger can be anything.** A person, a schedule, or an LLM coordinator may start each transition (`factory advance <run>`). The CLI refuses any transition whose gate has not passed, and any artifact that fails its schema. This is how an existing coordinator agent can drive the factory without making the path non-deterministic. It follows poteto's pattern of a deterministic CLI inside an agent's workflow.
+
+## 5. Trust ladder
+
+Set per repo in `WORKFLOW.md` (`trust:`). The mode dial comes from noodle; the rungs come from poteto.
+
+| Rung | Name | Who merges | Notes |
+|---|---|---|---|
+| 0 | manual | maintainer | the maintainer starts each station |
+| 1 | **supervised (default)** | maintainer | the maintainer approves every spec and merges every PR |
+| 2 | sampled | maintainer | the maintainer reviews a sample in depth and merges the rest on a clean verifier verdict |
+| 3 | auto-land | agents, two-way doors only | the maintainer reviews history after merge. **Needs the maintainer's written grant per repo**, because it overrides the never-merge rule. One-way doors never auto-land. |
+
+**Doors.** Triage marks each item one-way (migration, data deletion, auth, money, public API, external side effects) or two-way (easy to revert). One-way doors always stay at rung 1.
+
+The repo readiness score (§6) sets the highest rung a repo is allowed to reach.
+
+## 6. Repo onboarding (station R)
+
+Run once per repo, then on a schedule.
+
+1. **Stack detect**, then propose a `WORKFLOW.md` (§11) for the maintainer to approve.
+2. **Readiness check (script):** AGENTS.md, CI, tests, a linter **and** a type check for each language, verification skill, and the factory labels must all exist. Trunk MUST require passing CI, with no bypass for the token that agents use, so a red PR cannot merge. Harness hooks SHOULD block merges, pushes with an explicit refspec, and force-pushes, and `gh api` writes to rulesets, refs and contents. At high PR volume, trunk SHOULD use a merge queue: with only "require up to date" (strict), every merge makes every open PR update and re-run CI. On GitHub, a merge queue needs an organization-owned repo. Cluckwork, on 2026-10-10, shows the failure: strict was switched off to clear a batch, and a stale PR made `main` red. The score sets the highest allowed rung.
+3. **Verification skill.** If the repo has none, create one (`pstack:create-verification-skill`, or the fallback prompt). It lets agents run the app and use it as a user would.
+4. **Maintenance.** Keep the verification skill current on a schedule (`pstack:maintain-verification-skill`).
+
+## 7. Stations
+
+| # | Station | Does | Output | Exit gate |
+|---|---------|------|--------|-----------|
+| 0 | Intake | runs source adapters (§9) | work items | item not already claimed |
+| 1 | Triage | checks for redundancy (already built?) and prior rejection (`.out-of-scope/`), **reproduces on main**, classifies (class, size, door, risk flags), groups related items | agent brief, or a stop state | `ready-for-agent`, `ready-for-human`, `needs-info` or `wontfix`. A false premise stops here. |
+| 2 | Spec | writes the spec (`to-spec`), runs the approval session (`grill-with-docs`), splits into tickets with blocking edges (`to-tickets`), writes holdouts | `spec.md`, tickets, holdouts | **the maintainer approves every spec** |
+| 3 | Implement | skill chosen by class; writes only in its worktree | commits | build clean, targeted tests pass |
+| 4 | Publish | cleans the code, pushes, opens the PR, writes the PR body | PR linked to spec | PR exists |
+| 5 | Prove | verifier swarm at the head SHA (lanes below) | verdict pinned to the SHA | clean verdict, CI green |
+| 6 | Review | external reviewer loop (§12); the reviewer uses a different vendor from the implementer | threads answered | reviewer quiet, or stop rule hit |
+| 7 | Handoff | rebases onto trunk; the verdict must cover the trunk-current SHA; notifies the maintainer | PR ready to merge | the maintainer merges (rungs 0–2) |
+| 8 | Retro | after merge or abandon | proposals for environment changes | written to the buffer (§13) |
+
+Stations 5 and 6 start as soon as the PR opens. They run in parallel with CI.
+
+**Station 5 lanes** (from pstack `autopilot-full`):
+- re-run the gates at the head SHA;
+- live proof on the real surface through the verification skill, using the app as a user would and looking for regressions;
+- holdout scenarios, run by an agent the implementer could not see;
+- **regression lane:** run the same scenario on trunk;
+- receipts and diff audit, without trusting the PR body;
+- **scope judge:** does the diff match the spec? (the Spec axis of Matt's `code-review`). It grades each acceptance criterion as met or not met, with evidence. A redesign, extra scope, or an unmet criterion escalates to the maintainer before the PR can be ready. An issue closes only when every criterion is met, or the maintainer has amended it.
+
+**Proof freshness:** every proof (captures, verifier verdicts, measurements) records the SHA it ran on. The orchestrator rejects proof whose SHA differs from the head, unless the patch-id is unchanged. Agents do not make this check.
+
+A `perf` item adds a measurement lane (`pstack:benchmark-checklist`): what limits the number, and did the measured work actually happen?
+
+The number of verifiers is tunable: 1 for a two-way door, more for a one-way door or a risk flag.
+
+**Bounded rounds** (pstack 0.9.81):
+- Only the first round runs the full swarm. A later round checks only the fix and re-runs the probe that found each blocking finding.
+- A finding blocks only if the diff causes it (the PR makes behavior worse than trunk, or the claimed fix does not work). A defect that trunk already has goes to the buffer (§13) or is listed in the PR body as a known gap. It does not block, and it is not filed as an issue.
+- Each blocking finding needs a failing test that covers every site with the same defect, or a repro receipt if no test can show it.
+- After 2 fixes, if a blocking finding still remains, the PR is reported as blocked, with the evidence. The maintainer chooses: another round, a narrower PR, or close.
+
+**Failure paths.** A station returns `bounce(station, reason)` or `escalate(reason)`. After 2 revision cycles at one station, the item escalates with `factory:needs-human`. An escalation is written as a short questionnaire (`to-questionnaire`), not a long thread.
+
+**Holdout scenarios** (from StrongDM) are written by the maintainer or by a spec agent. They are stored outside the implementer's worktree, in `~/.factory/runs/<repo>/<issue>/holdout/`.
+
+## 8. Work item state
+
+State lives in the tracker. Labels map to Matt's `triage` states:
+
+| Label | Meaning |
+|-------|---------|
+| `factory:needs-triage` | not evaluated yet |
+| `factory:needs-info` | waiting for the reporter |
+| `factory:ready` | ready for an agent (`ready-for-agent`) |
+| `factory:needs-human` | needs the maintainer; the comment says why |
+| `factory:active` | claimed; a comment names the run id and the agent |
+| `factory:review` | in stations 5–6 |
+| `factory:done` | handed off |
+| `factory:wontfix` | closed with a reason |
+
+Per run, in `~/.factory/runs/<repo>/<issue>/`:
+- `progress.md`: a handoff file, so a new session or context window can continue (`handoff`);
+- `decisions.tsv`: one line per decision (`show-me-your-work`);
+- `children.tsv`: each sub-agent's id, expected runtime and state, for stall detection;
+- `metrics.jsonl`, agent logs, holdouts.
+
+Every station is idempotent. A run resumes from the label, the branch, the PR and `progress.md`.
+
+**Stall detection** (from Symphony and `autopilot-full`): only side effects count as progress (commits, pushes, PR or check changes, artifacts). An agent with no side effect past its expected runtime is stopped and replaced.
+
+## 9. Capabilities
+
+| Capability | Contract | This machine | Fallback (bare machine) |
+|------------|----------|--------------|-------------------------|
+| `source` | `sync` → NDJSON items; `done <id>` (noodle's adapter contract) | `gh` issues (v1) | plugins later: Slack, email, Linear, local `issues/*.md` |
+| `tracker` | read, comment, label, link PR; **no create** | `gh` | same plugins |
+| `identity` | agents act under their own forge identity, never the maintainer's token | a GitHub App or a machine user | a separate token per role |
+| `isolate` | one workspace per item | `git worktree` in `~/.factory-slices/<repo>/<id>` | same |
+| `spawn(role, tier, brief, ws)` | start an agent with least privilege for its role | Paseo tab (never a workspace) | `claude -p` / `codex exec` with a log file |
+| `status(handle)` | checked live | `get_agent_status` | `pgrep` + log tail |
+| `send(handle, msg)` | starts with `[coordinator]` | `send_agent_prompt` | resume the session |
+| `verify` | run the app as a user would | the repo's verification skill | a `run` command from `WORKFLOW.md` |
+| `review(diff)` | findings list from another vendor, posted under the reviewer's own identity; the orchestrator counts rounds from the forge, not from self-reports | the detected bot (CodeRabbit), Codex if rate-limited | a second agent from another vendor |
+| `clean_code` / `clean_prose` | remove slop | `pstack:deslop` / `pstack:unslop` | prompt files |
+| `notify` | tell the maintainer | PushNotification / Paseo | issue comment + stdout |
+| `schedule` | run on an interval | Paseo schedule / CronCreate | cron or a systemd timer |
+| `attach` | images on a PR | `gh --attach` (gh ≥ 2.99) | link to the CI artifact |
+| `shell_shim` | wrapper for privileged tools | `sg docker -c` | none |
+
+**Least privilege per role** (from Vercel Foreman): triage and verifier agents are read-only. The implementer writes only in its worktree. Only the orchestrator pushes, labels and comments.
+
+**Model tiers:** `cheap`, `standard`, `strong`, mapped per binding. On this machine: haiku / sonnet / opus-or-fable (per `pstack-models.md`).
+
+### Skill routing on this machine
+
+| Station | pstack | Matt Pocock | Fallback |
+|---|---|---|---|
+| R | `create-` / `maintain-verification-skill` | `improve-codebase-architecture` | prompt |
+| 1 | — | `triage` (followed as steps; it is human-invoked only) | prompt |
+| 2 | `architect` | `to-spec`, `grill-with-docs`, `to-tickets`, `wayfinder` (large work) | prompt |
+| 3 | `tdd`, feature / bug-fix / perf playbooks | `implement`, `tdd`, `diagnosing-bugs` | prompt |
+| 4 | `deslop`, `make-pr-easy-to-review`, `unslop` | `pr` | prompt |
+| 5 | `swarm`, `prove-it-works` | `code-review` (Spec axis) | prompt |
+| 6 | `babysit`, dev-rules review loop | — | prompt |
+| 8 | `correct`, `reflect`, `recall` | `retro` | prompt |
+
+`pstack:correct` (new in 0.9.81) is the core of station 8. It finds mistakes that agents repeat and makes each one impossible, in this order: architecture, then types, then a lint whose error names the fix, then a test, and docs last. Each new check must fail on a real past mistake.
+
+**Matt Pocock's new skills can only be started by a user prompt** (`disable-model-invocation: true`). An agent cannot call them itself. The orchestrator's brief is the user turn, so the orchestrator starts them by writing the slash command into the brief (for example `/triage #42`).
+
+**Note:** pstack's `autopilot-full` playbook already covers stations 3–7 on this machine. It runs one agent per PR, swarm-verifies each head, and the maintainer clicks every merge. It can be the station 3–7 binding here. The orchestrator still owns state, gates and metrics.
+
+## 10. Binding discovery
+
+`factory doctor` probes the machine and writes `~/.config/factory/bindings.yaml`:
+
+- harness CLIs on PATH (`claude`, `codex`, `pi`, `hermes`, …);
+- orchestrators (Paseo, Orca, noodle);
+- installed skills and their versions **in each harness's skill directory**. A drift between directories is a warning. Example found on 2026-10-09: Claude Code loads pstack 0.9.27, the marketplace has 0.9.81, and `~/.agents/skills/pstack:*` (read by other harnesses) points to a local clone at 0.9.30;
+- tracker host (from the git remote);
+- reviewer bot and its trigger (from the authors of recent PR comments);
+- tool versions and quirks (`gh` version, docker group via `getent`).
+
+**Precedence:** repo `WORKFLOW.md` > machine `bindings.yaml` > detected > fallback.
+
+**noodle** can be a `spawn` and `schedule` binding, but only in `manual` mode, with the implement skill opening a PR. Its own merge step MUST NOT run, and it supports only Claude and Codex.
+
+## 11. WORKFLOW.md (per repo)
+
+One file in the repo root, in the Symphony format: YAML settings plus a markdown prompt body.
+
+```yaml
+---
+trust: 1
+tracker: github
+commands:
+  build: …
+  test: …
+  test_targeted: … {paths}
+  lint: …
+  run: …
+  services_up: …
+verify_skill: .agents/skills/verify
+wip_limit: 3
+routines:
+  - name: banned-patterns
+    every: 1d
+    skill: gardening-scan
+---
+Repo-specific guidance for every agent …
+```
+
+**Where the commands come from**, in order: AGENTS.md → CI workflow files (they list the real commands) → manifests (`package.json`, `*.sln`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `Makefile`, `justfile`). If no source gives a command, ask once and write the answer into the file.
+
+## 12. Policy
+
+Each rule is **enforced** (code blocks the action) or **instructed** (prompt only). Over time, instructed rules move to enforced.
+
+| Rule | Mode |
+|------|------|
+| Never merge (rungs 0–2). Never push with an explicit refspec. | enforced (only the orchestrator pushes; pre-push guard) |
+| Never file issues without approval; offer a batch at the end. | enforced (`tracker` has no `create`) |
+| Every coordinator prompt starts with `[coordinator]`. | enforced (`send` adds it) |
+| Push when the build is clean and targeted tests pass, then prove. Fixes are new commits, never force-pushes. | enforced (station order) |
+| Review loop: find the reviewer, read both surfaces, reply on the thread, trigger the next round. Stop after 2 rounds in a row with no product defect. | enforced (orchestrator counts rounds) + instructed (triage of findings) |
+| Every background job states what it is, its output path, a watch command and an expected duration. | enforced by `spawn` |
+| Images go up as attachments, never on branches. | enforced by `attach` |
+| Call the user "the maintainer". | instructed |
+| Agents never use the maintainer's token. | enforced (`identity` binding) |
+| An approval counts only if it is visible under the maintainer's identity: a tracker comment, a review, or the maintainer's own words in `decisions.tsv`. This covers scope changes, extra issues and ceiling raises. | enforced (orchestrator checks the author) |
+| Agents never change trunk protection or rulesets. The maintainer changes them, and each change is recorded in the run log. | enforced (identity has no admin rights) + instructed |
+
+## 13. Loops
+
+From poteto's inner and outer loops.
+
+- **Inner loop:** stations 1–7.
+- **Outer loop:** source adapters bring context in, so the maintainer does not carry it by hand. v1 reads `gh` issues. Later: Slack, email, X. Triage reproduces each report on main before any work starts.
+- **Grouping:** related items (for example, 30 performance reports) go to one coordinator as a batch, not to 30 agents. This avoids duplicate work and finds the shared root cause.
+- **Gardening loop:** scheduled scanners (banned patterns, code quality) **append to a buffer**. They do not fix and do not file issues. Every few days an agent clusters the buffer, and the maintainer picks which clusters become work. This also fits the rule that issues need approval.
+- **Feedback loop:** a retro after each run, plus periodic transcript mining (`pstack:reflect`, `recall`). Both look for repeated failures and maintainer interventions, and propose lint rules, types, scripts or skill changes. The proposals go to the buffer.
+
+The buffer lives in `~/.factory/buffer/<repo>.md`.
+
+## 14. Layout
+
+```
+factory/
+  bin/factory             orchestrator: run, doctor, onboard, status
+  PROCESS.md              stations and gates (the spec)
+  POLICY.md
+  schemas/                artifact schemas per station
+  prompts/                versioned briefs: triage, spec, implement-*, verifier, reviewer, retro, clean-*
+  bindings/
+    claude-paseo-pstack.yaml
+    codex.yaml
+    bare.yaml
+  templates/WORKFLOW.md
+  skills/factory/SKILL.md entry point (Agent Skills format)
+AGENTS.md                 entry point for harnesses without skills
+```
+
+## 15. Triggers
+
+- **Manual:** `factory run 12 15 18` (or `/factory` in a harness that has skills).
+- **Scheduled:** every N minutes, claim `factory:ready` items up to the WIP limit. Verifier and reviewer agents do not count against the limit.
+- **Routines:** the gardening scanners from `WORKFLOW.md`.
+- **Host:** this machine for v1. All state is in the tracker and the run dir, so moving to an always-on host later only needs a new binding.
+
+## 16. Metrics
+
+Per run, in `metrics.jsonl`:
+- time from issue to handoff;
+- review rounds, and confirmed product defects per round;
+- verifier findings per head;
+- **maintainer interventions** (each one is a bottleneck to remove);
+- tokens and time per station;
+- outcome (merged, abandoned, escalated), and reverts after merge.
+
+These numbers decide when a repo moves up a trust rung.
+
+## 17. Build order
+
+1. `PROCESS.md`, schemas, briefs, and an orchestrator skeleton. Run one issue through stations 0–4 by hand on this machine. First check that a headless call (`claude -p "/to-spec …"`) can start a skill that only a user prompt can invoke.
+2. Onboarding: stack detect, `WORKFLOW.md`, readiness check, verification skill.
+3. Stations 5–7: verifier swarm, reviewer loop, handoff.
+4. `factory doctor` and the bare binding. Prove it on a second harness (Codex).
+5. Schedule, labels, WIP limit, stall detection.
+6. Gardening and feedback loops, metrics.
+
+## 18. Decisions
+
+| # | Question | Decision |
+|---|----------|----------|
+| 1 | Who writes holdout scenarios? | The maintainer or a spec agent, either. |
+| 2 | Spec approval threshold? | The maintainer approves every spec. |
+| 3 | Tracker scope? | `gh` in v1, behind the pluggable `source` / `tracker` capabilities. |
+| 4 | Coordinator host? | This machine in v1; an always-on host later. |
+| 5 | Is the workflow deterministic? | The process is (§4). The agents' output is not. |
+| 6 | Default trust rung? | 1, supervised. |
+| 7 | Matt Pocock's new skills? | Installed (2026-10-09) in `~/.agents/skills`. |
+| 8 | Pilot (build step 1)? | Cluckwork #1223: a growth cap for legacy files and a 1,500-line cap for test files. The maintainer's decision is recorded in the issue, and its acceptance criteria are checkable mutations. It re-runs the case that failed the pilot's acceptance check (§20). The Platform Hardening coordinator (Paseo agent `0e442060…`) drives it through the `factory` CLI, after its in-flight PRs merge. |
+| 9 | Agent identity? | A GitHub App. The maintainer logs out of `gh` on this machine. Agents get short-lived installation tokens. Git pushes over HTTPS through the `gh` credential helper and there are no SSH keys, so the logout also removes the maintainer's identity from `git push`. |
+| 10 | Orchestrator language? | C# on .NET 10, released as a Native AOT binary (one per OS, built in CI). The maintainer owns and reviews it in their main language, and it can use the same build guards as Cluckwork. |
+
+## 19. Open questions
+
+1. **Cost.** Proposal: record tokens, time and maintainer interventions from the first run. Set no ceiling until there are about 10 runs. A run over budget escalates; it is never stopped silently.
+2. **Orchestrator language:** decided (§18, row 10).
+3. **Draft or ready PR?** `autopilot-full` opens PRs as ready, and some review bots skip drafts. Recommendation: ready.
+4. **Rebase or merge trunk into the branch?** `autopilot-full` rebases onto trunk before handoff and publishes with `git push --force-with-lease` on the PR's own branch. dev-rules says a fix is a new commit and never a force-push. Option A: allow `--force-with-lease` only for a rebase of the PR's own branch, and never for a fix. Option B: merge trunk into the branch, with no force-push at all.
+5. **Second-vendor reviewer** on a machine with only one vendor: fall back to a different model from the same vendor?
+6. **App permissions:** grant Contents, Pull requests, Issues, Checks (read) and Actions (read). Do not grant Administration, so the app cannot change rulesets or protection. Workflows write is open: agents edited `ci.yml` in the pilot. Without it, those PRs go to the maintainer.
+
+## 20. Pilot record: Cluckwork guardrails (2026-10-10 to 2026-10-11)
+
+A manual run of stations 3–7: one coordinator prompt, one worker per task, and about 20 merged PRs. A read-only audit afterwards found five lessons, now built into the design:
+
+| Lesson | Evidence | Where it lives now |
+|---|---|---|
+| Agents shared the maintainer's GitHub account, so no action could be traced to its author. | Ruleset toggles, approvals and Codex review rounds were all authored by `mforce`. | §9 `identity`, §12 |
+| Acceptance drift went unchecked. | The file-size guard was redesigned to names only without sign-off. #1154 was closed on false acceptance text. Task D shipped more than its top 3. | §7 scope judge, §12 approvals |
+| Proof was stale. | The SalesPage captures were taken at `1789288b`, but the merged head was `9441aef1`. | §7 proof freshness |
+| Review rounds could not be verified. | Local Codex reviews were posted as the maintainer, with no bot record. | §9 `review` |
+| Strict mode does not scale with PR volume. | Strict was switched off to clear a batch, and stale #1195 turned `main` red for 18 minutes. | §6 merge queue |
+
+## References
+
+- poteto with Matt Pocock, "shipping 1,000's of PRs a month at SpaceX" (2026-10-03): https://www.youtube.com/watch?v=MN9dGgmLyso. Transcript: `~/videotranscripts/2026-10-03-poteto-matt-pocock-software-factory-MN9dGgmLyso.txt`
+- pstack `poteto-mode` → `playbooks/autopilot-full.md`
+- StrongDM Software Factory / Attractor: https://factory.strongdm.ai/products/attractor
+- OpenAI Symphony: https://openai.com/index/open-source-codex-orchestration-symphony
+- Vercel Foreman / course: https://vercel.com/academy/creating-a-software-factory
+- Matt Pocock skills: https://github.com/mattpocock/skills
+- noodle: https://github.com/poteto/noodle
+- Gas Town: https://github.com/gastownhall/gastown
+- AGENTS.md, Agent Skills, MCP, GitHub Spec Kit, 12-Factor Agents
