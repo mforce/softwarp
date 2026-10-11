@@ -97,11 +97,11 @@ Run once per repo, then on a schedule.
 | 3 | Implement | skill chosen by class; writes only in its worktree | commits | build clean, targeted tests pass |
 | 4 | Publish | cleans the code, pushes, opens the PR, writes the PR body | PR linked to spec | PR exists |
 | 5 | Prove | verifier swarm at the head SHA (lanes below) | verdict pinned to the SHA | clean verdict, CI green |
-| 6 | Review | **optional, per repo** (`review:` in `WORKFLOW.md`): `bot` runs the external reviewer loop (§12); `local` runs one read-only review by another vendor's model or the free GLM lane; `none` relies on station 5 and the maintainer's own review | threads answered | `bot`: reviewer quiet, or stop rule hit. `local`: findings triaged. `none`: passes at once |
+| 6 | Review | **local agent review, required on every PR:** read-only reviewer agents from another vendor than the implementer (on this machine: `pstack:thermo-nuclear-code-quality-review` and `ponytail-review`), findings fixed and answered. **Optional, per repo** (`review_bot:` in `WORKFLOW.md`): the GitHub bot loop (§12) on top | local findings triaged and fixed | local review clean; with a bot on, also reviewer quiet or stop rule hit |
 | 7 | Handoff | rebases onto trunk; the verdict must cover the trunk-current SHA; notifies the maintainer | PR ready to merge | the maintainer merges (rungs 0–2) |
 | 8 | Retro | after merge or abandon | proposals for environment changes | written to the buffer (§13) |
 
-Stations 5 and 6 start as soon as the PR opens. They run in parallel with CI. With `review: none`, station 5 (verifiers and the scope judge) is the only automated check before the maintainer reviews.
+Stations 5 and 6 start as soon as the PR opens. They run in parallel with CI. The local agent review always runs; a GitHub review bot is optional per repo.
 
 **Station 5 lanes** (from pstack `autopilot-full`):
 - re-run the gates at the head SHA;
@@ -164,7 +164,7 @@ Every station is idempotent. A run resumes from the label, the branch, the PR an
 | `status(handle)` | checked live | `get_agent_status` | `pgrep` + log tail |
 | `send(handle, msg)` | starts with `[coordinator]` | `send_agent_prompt` | resume the session |
 | `verify` | run the app as a user would | the repo's verification skill | a `run` command from `WORKFLOW.md` |
-| `review(diff)` | **optional.** Findings list from another vendor, posted under the reviewer's own identity; the orchestrator counts rounds from the forge, not from self-reports | `none` today: the GitHub bots (CodeRabbit, Codex) are switched off because of token cost and rate limits. `local` uses Codex or GLM on demand | a second agent from another vendor, or none |
+| `review(diff)` | findings list from read-only reviewer agents of another vendor; required on every PR. The orchestrator counts rounds from its own run log, and reviewers that post use their own identity | local Paseo reviewer tabs (Codex `gpt-6-astra`, Claude, the free GLM lane). The GitHub bots (CodeRabbit, the Codex connector) are optional and off today because of token cost and rate limits | a second agent from another vendor |
 | `clean_code` / `clean_prose` | remove slop | `pstack:deslop` / `pstack:unslop` | prompt files |
 | `notify` | tell the maintainer | PushNotification / Paseo | issue comment + stdout |
 | `schedule` | run on an interval | Paseo schedule / CronCreate | cron or a systemd timer |
@@ -227,7 +227,7 @@ commands:
   run: …
   services_up: …
 verify_skill: .agents/skills/verify
-review: none          # bot | local | none
+review_bot: none      # coderabbit | codex | none (the local agent review always runs)
 wip_limit: 3
 routines:
   - name: banned-patterns
@@ -249,7 +249,7 @@ Each rule is **enforced** (code blocks the action) or **instructed** (prompt onl
 | Never file issues without approval; offer a batch at the end. | enforced (`tracker` has no `create`) |
 | Every coordinator prompt starts with `[coordinator]`. | enforced (`send` adds it) |
 | Push when the build is clean and targeted tests pass, then prove. Fixes are new commits, never force-pushes. | enforced (station order) |
-| When a repo uses `review: bot`: find the reviewer, read both surfaces, reply on the thread, trigger the next round. Stop after 2 rounds in a row with no product defect. | enforced (orchestrator counts rounds) + instructed (triage of findings) |
+| Every PR gets the local agent review; it is never skipped. When a repo has `review_bot` on: find the reviewer, read both surfaces, reply on the thread, trigger the next round. Stop after 2 rounds in a row with no product defect. | enforced (station 6 gate; orchestrator counts rounds) + instructed (triage of findings) |
 | Every background job states what it is, its output path, a watch command and an expected duration. | enforced by `spawn` |
 | Images go up as attachments, never on branches. | enforced by `attach` |
 | Call the user "the maintainer". | instructed |
