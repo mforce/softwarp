@@ -53,6 +53,8 @@ public static class Policy
     {
         // TODO: Require unique criteria/ticket ids, acyclic edges referencing existing tickets,
         // nonempty acceptance, holdouts referring to criteria, at least one test target; reject empty strings.
+        // Each test target must match a strict allow-pattern (letters, digits and . _ - / : = ~ ! & | ( ) only, no
+        // whitespace, quotes, $, ;, backticks or newlines). Targets feed gate argv, so this is a trust boundary.
         // Ticket splitting stays local; multiple independently publishable items need human scope.
         throw new NotImplementedException();
     }

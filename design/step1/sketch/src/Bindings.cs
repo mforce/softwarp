@@ -77,6 +77,7 @@ public static class WorkflowFile
         // Keys: trust, tracker, commands {build, test_targeted "{targets}", lint}, verify_skill, review_bot, wip_limit.
         // Step 1 permits trust 0..2 only and always requires spec approval; never infer merge rights.
         // Commands are argv tokens; `{targets}` expands from the APPROVED spec's TestTargets, never from the implementer.
+        // Each target replaces exactly one whole argv element; it is never spliced into a string or passed to a shell.
         throw new NotImplementedException();
     }
 }

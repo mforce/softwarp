@@ -63,7 +63,9 @@ public interface ISpawn
     Task SendAsync(AgentHandle handle, string message, CancellationToken ct);
 }
 
-/// <summary>Trusted runner executes configured commands against a frozen head, never agent claims.</summary>
+/// <summary>Trusted runner executes configured commands against a frozen head, never agent claims.
+/// Commands run as argv (no shell). A machine shim that needs one command string (`sg docker -c`) gets every argv
+/// element POSIX single-quoted by the binding, so a test target can never become shell syntax.</summary>
 public interface IGates
 {
     Task<ImmutableArray<GateReceipt>> RunAsync(Workspace workspace, CommitId head,
