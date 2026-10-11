@@ -173,7 +173,9 @@ Every station is idempotent. A run resumes from the label, the branch, the PR an
 
 **Least privilege per role** (from Vercel Foreman): triage and verifier agents are read-only. The implementer writes only in its worktree. Only the orchestrator pushes, labels and comments.
 
-**Model tiers:** `cheap`, `standard`, `strong`, mapped per binding. On this machine: haiku / sonnet / opus-or-fable (per `pstack-models.md`).
+**Model tiers:** `free`, `cheap`, `standard`, `strong`, mapped per binding. On this machine:
+- `free`: GLM 5.3 Flash on the maintainer's homelab vLLM, through Pi (`vllm/GLM-5.3-Flash-EXL3`) or Hermes. It costs time, not money. Use it for mechanical roles: first-pass triage classification, schema-retry repairs, gardening scans, metrics summaries. A Pi + GLM binding is also the cheapest proof of a third harness and a third model family.
+- `cheap` / `standard` / `strong`: haiku / sonnet / opus or fable (per `pstack-models.md`). Codex (`gpt-6-astra`) is the other-vendor model for reviews and cross-judging.
 
 ### Skill routing on this machine
 
