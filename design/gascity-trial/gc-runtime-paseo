@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Prototype Gas City exec runtime: each gc session is a Paseo agent tab (softwarp trial).
+# Known gaps: gc's harness hooks (--settings) are dropped, because Paseo builds the harness argv itself.
+set -u
+# Never inherit the calling Paseo agent's workspace or identity.
+for v in $(compgen -e | grep '^PASEO'); do unset "$v"; done
+op=${1:-}; name=${2:-}
+state=/home/mforce/gc-trial/home/paseo-shim
+mkdir -p "$state"
+idf="$state/$name.id"
+
+agent_id() { cat "$idf" 2>/dev/null; }
+pidf="$state/$name.pid"; logf="$state/$name.log"
+proc_running() { local pid; pid=$(cat "$pidf" 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
+running() {
+  proc_running && return 0
+  local id; id=$(agent_id); [ -n "$id" ] || return 1
+  paseo inspect "$id" --json 2>/dev/null | jq -e '(.Status // "") as $s | $s != "" and $s != "closed" and $s != "error" and (.Archived | not)' >/dev/null
+}
+
+case "$op" in
+  protocol) echo '{"version":0,"capabilities":[]}' ;;
+  start)
+    cfg=$(cat)
+    cmd=$(jq -r '.command // ""' <<<"$cfg")
+    read -r -a argv <<<"$cmd"
+    provider=$(basename "${argv[0]:-}")
+    case "$provider" in
+      claude|codex|pi) ;;
+      *) # not a harness (e.g. gc's control dispatcher): run it as a plain background process
+        cwd=$(jq -r '.work_dir // empty' <<<"$cfg")
+        envs=(); while IFS= read -r kv; do envs+=("$kv"); done < <(jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cfg")
+        (cd "${cwd:-$PWD}" && exec env "${envs[@]}" setsid sh -c "$cmd" >>"$logf" 2>&1 </dev/null) &
+        echo $! >"$pidf"; exit 0 ;;
+    esac
+    model=""; for ((i = 0; i < ${#argv[@]}; i++)); do [ "${argv[i]}" = --model ] && model=${argv[i+1]:-}; done
+    args=(run -d --json --provider "$provider" --title "gc:$name" --label "gc_session=$name")
+    [ -n "$model" ] && args+=(--model "$model")
+    case "$provider" in claude) args+=(--mode bypassPermissions) ;; codex) args+=(--mode full-access) ;; esac
+    cwd=$(jq -r '.work_dir // empty' <<<"$cfg"); args+=(--cwd "${cwd:-$PWD}" --env "PATH=$PATH")
+    while IFS= read -r kv; do args+=(--env "$kv"); done < <(jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cfg")
+    prompt=$(jq -r '.nudge // empty' <<<"$cfg"); [ -n "$prompt" ] || prompt='Run `gc prime` and follow its instructions.'
+    id=$(paseo "${args[@]}" "$prompt" | jq -r '.id // .agentId // empty') || exit 1
+    [ -n "$id" ] || { echo "paseo run returned no agent id" >&2; exit 1; }
+    echo "$id" >"$idf"
+    ;;
+  stop) pid=$(cat "$pidf" 2>/dev/null); [ -n "$pid" ] && kill -- -"$pid" 2>/dev/null; kill "$pid" 2>/dev/null; rm -f "$pidf"; id=$(agent_id); [ -n "$id" ] && { paseo stop "$id" >/dev/null 2>&1; paseo archive "$id" >/dev/null 2>&1; }; rm -f "$idf"; exit 0 ;;
+  is-running) running && echo true || echo false ;;
+  process-alive) cat >/dev/null; running && echo true || echo false ;;
+  interrupt) id=$(agent_id); [ -z "$id" ] || paseo stop "$id" >/dev/null ;;
+  nudge) [ -e "$pidf" ] && { cat >/dev/null; exit 0; }; id=$(agent_id); [ -n "$id" ] || exit 1; paseo send --no-wait "$id" --prompt "$(cat)" >/dev/null ;;
+  peek) [ -e "$pidf" ] && { tail -n "${3:-50}" "$logf"; exit 0; }; id=$(agent_id); [ -n "$id" ] || exit 1; paseo logs "$id" --tail "${3:-50}" ;;
+  list-running)
+    for f in "$state/$name"*.id "$state/$name"*.pid; do
+      [ -e "$f" ] || continue
+      n=$(basename "${f%.*}")
+      name=$n idf="$state/$n.id" pidf="$state/$n.pid"; running && echo "$n"
+    done; exit 0 ;;
+  set-meta) cat >"$state/$name.meta.$3" ;;
+  get-meta) cat "$state/$name.meta.$3" 2>/dev/null; exit 0 ;;
+  remove-meta) rm -f "$state/$name.meta.$3" ;;
+  *) exit 2 ;;
+esac
