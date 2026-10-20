@@ -52,6 +52,7 @@ public class ValidateTests
     [InlineData("../x.csproj")]
     [InlineData("tests/../../x")]
     [InlineData("..")]
+    [InlineData("./..")]
     public void TestTargetOutsideTheAllowPattern_IsRejected(string target) =>
         Assert.Single(Validation.Validate(Valid with { TestTargets = [target] }));
 
