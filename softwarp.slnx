@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Softwarp.Core/Softwarp.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Softwarp.Core.Tests/Softwarp.Core.Tests.csproj" />
+  </Folder>
+</Solution>
