@@ -263,7 +263,7 @@ Each rule is **enforced** (code blocks the action) or **instructed** (prompt onl
 | Images go up as attachments, never on branches. | enforced by `attach` |
 | Call the user "the maintainer". | instructed |
 | Agents never use the maintainer's token. | enforced (`identity` binding) |
-| An approval counts only as a forge comment `/softwarp approve <digest>` that quotes the current spec digest, posted after the spec by the maintainer's account (a non-bot admin, matched by account id) and edited by nobody else. Nothing local counts, `decisions.tsv` included. This covers specs, scope changes, extra issues and ceiling raises. softwarp checks it again just before every push. | enforced (`Policy.FindApproval` on forge facts) |
+| An approval counts only as a forge comment `/softwarp approve <digest>` that quotes the current spec digest, posted after the spec by the maintainer's account (a non-bot admin, matched by account id) and edited by nobody else. Nothing local counts, `decisions.tsv` included. This covers specs, scope changes, extra issues and ceiling raises. softwarp checks it again just before every push. | enforced (`Policy.Explain` on forge facts) |
 | Agents run in their harness's sandbox: writes only in the run's worktree; reads blocked for the App key, holdouts, the run store, `~/.ssh` and `gh` config. Agents never run Docker (Docker access defeats any sandbox); Docker-based tests run as gates. | enforced (`spawn` binding) |
 | Agents never change trunk protection or rulesets. The maintainer changes them, and each change is recorded in the run log. | enforced (identity has no admin rights) + instructed |
 
