@@ -36,7 +36,13 @@ case "$op" in
     model=""; for ((i = 0; i < ${#argv[@]}; i++)); do [ "${argv[i]}" = --model ] && model=${argv[i+1]:-}; done
     args=(run -d --json --provider "$provider" --title "gc:$name" --label "gc_session=$name")
     [ -n "$model" ] && args+=(--model "$model")
-    case "$provider" in claude) args+=(--mode bypassPermissions) ;; codex) args+=(--mode full-access) ;; esac
+    # Mirror the permission mode gc configured; never escalate. No bypass flag -> Paseo's default (restricted) mode.
+    for a in "${argv[@]}"; do
+      case "$provider:$a" in
+        claude:--dangerously-skip-permissions) args+=(--mode bypassPermissions) ;;
+        codex:--dangerously-bypass-approvals-and-sandbox) args+=(--mode full-access) ;;
+      esac
+    done
     cwd=$(jq -r '.work_dir // empty' <<<"$cfg"); args+=(--cwd "${cwd:-$PWD}" --env "PATH=$PATH")
     while IFS= read -r kv; do args+=(--env "$kv"); done < <(jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cfg")
     prompt=$(jq -r '.nudge // empty' <<<"$cfg"); [ -n "$prompt" ] || prompt='Run `gc prime` and follow its instructions.'
