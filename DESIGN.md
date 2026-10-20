@@ -133,7 +133,7 @@ The number of verifiers is tunable: 1 for a two-way door, more for a one-way doo
 
 ## 8. Work item state
 
-State lives in the tracker. Labels map to Matt's `triage` states:
+Labels are **views**: written for people, never read to decide anything. The next step is derived from the run's receipts, git and the forge (`Policy.Next`, sketch row table). Labels map to Matt's `triage` states:
 
 | Label | Meaning |
 |-------|---------|
@@ -148,11 +148,11 @@ State lives in the tracker. Labels map to Matt's `triage` states:
 
 Per run, in `~/.softwarp/runs/<repo>/<issue>/`:
 - `progress.md`: a handoff file, so a new session or context window can continue (`handoff`);
-- `decisions.tsv`: one line per decision (`show-me-your-work`);
+- `decisions.tsv`: one line per decision (`show-me-your-work`); a mirror, never an approval;
 - `children.tsv`: each sub-agent's id, expected runtime and state, for stall detection;
 - `metrics.jsonl`, agent logs, holdouts.
 
-Every station is idempotent. A run resumes from the label, the branch, the PR and `progress.md`.
+Every station is idempotent. A run resumes from its receipts, the branch and the PR. A missing run manifest stops the run; it is never rebuilt from labels.
 
 **Stall detection** (from Symphony and `autopilot-full`): only side effects count as progress (commits, pushes, PR or check changes, artifacts). An agent with no side effect past its expected runtime is stopped and replaced.
 
@@ -217,29 +217,34 @@ Every station is idempotent. A run resumes from the label, the branch, the PR an
 
 ## 11. WORKFLOW.md (per repo)
 
-One file in the repo root, in the Symphony format: YAML settings plus a markdown prompt body.
+One file in the repo root, in the Symphony format: a settings block plus a markdown prompt body. The settings block is JSON, which is also valid YAML, so the Native AOT binary needs no YAML library. softwarp reads it at the pinned trunk commit, never from a worktree.
 
-```yaml
+```markdown
 ---
-trust: 1
-tracker: github
-commands:
-  build: …
-  test: …
-  test_targeted: … {paths}
-  lint: …
-  run: …
-  services_up: …
-verify_skill: .agents/skills/verify
-review_bot: none      # coderabbit | codex | none (the local agent review always runs)
-wip_limit: 3
-routines:
-  - name: banned-patterns
-    every: 1d
-    skill: gardening-scan
+{
+  "trust": 1,
+  "tracker": "github",
+  "branch": "feat/{issue}-{slug}",
+  "commands": {
+    "build": ["…"],
+    "test": ["…"],
+    "test_targeted": ["…", "{targets}"],
+    "lint": ["…"],
+    "run": ["…"],
+    "services_up": ["…"]
+  },
+  "verify_skill": ".agents/skills/verify",
+  "review_bot": "none",
+  "wip_limit": 3,
+  "routines": [{ "name": "banned-patterns", "every": "1d", "skill": "gardening-scan" }]
+}
 ---
 Repo-specific guidance for every agent …
 ```
+
+- `branch` follows the repo's own convention and MUST contain `{issue}`, so softwarp can find its branch and PR again after a crash.
+- `commands` are argv arrays, never shell strings. `{targets}` is filled from the approved spec's test targets.
+- `review_bot`: `coderabbit`, `codex` or `none`. The local agent review always runs.
 
 **Where the commands come from**, in order: AGENTS.md → CI workflow files (they list the real commands) → manifests (`package.json`, `*.sln`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `Makefile`, `justfile`). If no source gives a command, ask once and write the answer into the file.
 
@@ -258,7 +263,8 @@ Each rule is **enforced** (code blocks the action) or **instructed** (prompt onl
 | Images go up as attachments, never on branches. | enforced by `attach` |
 | Call the user "the maintainer". | instructed |
 | Agents never use the maintainer's token. | enforced (`identity` binding) |
-| An approval counts only if it is visible under the maintainer's identity: a tracker comment, a review, or the maintainer's own words in `decisions.tsv`. This covers scope changes, extra issues and ceiling raises. | enforced (orchestrator checks the author) |
+| An approval counts only as a forge comment `/softwarp approve <digest>` that quotes the current spec digest, posted after the spec by the maintainer's account (a non-bot admin, matched by account id) and edited by nobody else. Nothing local counts, `decisions.tsv` included. This covers specs, scope changes, extra issues and ceiling raises. softwarp checks it again just before every push. | enforced (`Policy.FindApproval` on forge facts) |
+| Agents run in their harness's sandbox: writes only in the run's worktree; reads blocked for the App key, holdouts, the run store, `~/.ssh` and `gh` config. Agents never run Docker (Docker access defeats any sandbox); Docker-based tests run as gates. | enforced (`spawn` binding) |
 | Agents never change trunk protection or rulesets. The maintainer changes them, and each change is recorded in the run log. | enforced (identity has no admin rights) + instructed |
 
 ## 13. Loops
@@ -334,6 +340,11 @@ These numbers decide when a repo moves up a trust rung.
 | 9 | Agent identity? | A GitHub App. The maintainer logs out of `gh` on this machine. Agents get short-lived installation tokens. Git pushes over HTTPS through the `gh` credential helper and there are no SSH keys, so the logout also removes the maintainer's identity from `git push`. |
 | 10 | Orchestrator language? | C# on .NET 10, released as a Native AOT binary (one per OS, built in CI). The maintainer owns and reviews it in their main language, and it can use the same build guards as Cluckwork. |
 | 11 | Build or adopt (Gas Town, Gas City)? | Build (2026-10-20). The Gas City trial (`design/gascity-trial.md`) found its defaults open exactly where softwarp must hold: plain gate edges and errored gates let the next step start, `--force` passes any gate, and a crashed agent's replacement repeats side effects. It also has a heavy stack and packs with no license. Borrowed: exit 75, fail-closed gates, the runtime protocol for `spawn`, adopting live agents after a crash, per-role routing. Revisit when many agents in parallel matter. |
+| 12 | How does the maintainer approve a spec? | A browser comment `/softwarp approve <digest>` (or `/softwarp revise <digest>: …`) on the issue, for every spec. No local file or CLI verb grants approval (2026-10-20). |
+| 13 | `WORKFLOW.md` settings syntax? | JSON front matter: no dependency, valid YAML, AOT-safe (2026-10-20). |
+| 14 | Isolation in step 1? | Harness sandboxes (Claude Code, Codex) with write and read limits, from step 1. Agents never run Docker. A separate OS user only if the sandbox proves too weak (2026-10-20). |
+| 15 | Branch names? | The repo's own convention, set in `WORKFLOW.md` (`branch`), containing the issue number (2026-10-20). |
+| 16 | PRs per run? | One. A spec with several tickets goes to one implementer, ordered by their blocking edges (2026-10-20). |
 
 ## 19. Open questions
 

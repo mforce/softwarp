@@ -102,19 +102,18 @@ The digest covers the spec, the tickets, the holdouts and the run pins. Any chan
 - **One verb per transition** (`softwarp triage`, `softwarp approve`). This exposes the station graph to callers, and a local `approve` is forgeable.
 - **An event-sourced journal.** It is a second copy of facts that git and the forge already own authoritatively.
 
-## Deviations from DESIGN.md (to apply after approval)
+## Deviations from DESIGN.md
 
-- §12: `decisions.tsv` no longer counts as an approval. Only the forge comment counts.
-- §8: labels become views only; they are no longer state.
-- §11: `WORKFLOW.md` front matter becomes JSON (pending question 2).
+Applied 2026-10-20: §8 labels are views, §11 JSON front matter, §12 approval by forge comment only.
 
-## Open questions
+## Decisions (2026-10-20, DESIGN.md §18 rows 11–16)
 
-1. **Approval:** is a browser comment `/softwarp approve <digest>` acceptable for every spec? All four candidates converged on it.
-2. **`WORKFLOW.md` syntax:** JSON front matter (no dependency, still valid YAML), or YAML syntax through YamlDotNet's static generator?
-3. **Isolation in step 1:** the hard boundaries are on the forge: the app's permissions, agents holding no write credentials, and approval by your identity. A worker running as your Unix user can still read the app key and `holdout/`. Should an OS sandbox (a second Unix user, or Codex's sandbox with deny rules) be a step 1 prerequisite, or come later?
-4. **Pilot setup:** Cluckwork needs a committed `WORKFLOW.md` on trunk before the pilot. Branch names: `softwarp/<n>`, or the repo's convention (`feat/<n>-slug`), set in `WORKFLOW.md`?
-5. **One PR per run:** a spec with several tickets goes to one implementer, with tickets ordered by their blocking edges.
+1. **Approval:** a browser comment `/softwarp approve <digest>` for every spec.
+2. **`WORKFLOW.md` syntax:** JSON front matter.
+3. **Isolation:** harness sandboxes from step 1; agents never run Docker; a separate OS user only if needed.
+4. **Branch names:** the repo's convention, from `WORKFLOW.md`, with the issue number.
+5. **One PR per run.**
+6. **Build, not adopt Gas City.** Borrowed: exit 75, fail-closed gates, the runtime protocol for `spawn`, adopting live agents.
 
 ## Next implementation step
 
