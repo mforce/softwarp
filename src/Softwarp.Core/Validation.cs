@@ -45,7 +45,7 @@ public static class Validation
         Require(cyclic.Count == 0, $"tickets {string.Join(", ", cyclic)} are in or behind a blocking cycle");
 
         foreach (var target in spec.TestTargets.Where(t => !IsSafeTestTarget(t)))
-            errors.Add($"test target '{target}' is empty, starts with '-', or has a character outside letters, digits and ._/:=~-");
+            errors.Add($"test target '{target}' is empty, starts with '-' or '/', has a '..' segment, or has a character outside letters, digits and ._/:=~-");
         return errors.ToImmutable();
     }
 
@@ -65,8 +65,10 @@ public static class Validation
     static IEnumerable<string> Duplicates(IEnumerable<string> ids) =>
         ids.CountBy(id => id).Where(group => group.Value > 1).Select(group => group.Key);
 
-    // A target becomes one argv element of a gate command: a leading '-' would read as an option, and how targets
-    // combine is the workflow template's business, so no operators.
+    // A target becomes one argv element of a gate command: a leading '-' or '/' would read as an option ('/' is
+    // MSBuild's switch prefix), a '..' segment would leave the worktree, and how targets combine is the workflow
+    // template's business, so no operators.
     static bool IsSafeTestTarget(string target) =>
-        target.Length > 0 && target[0] != '-' && target.All(c => char.IsAsciiLetterOrDigit(c) || "._/:=~-".Contains(c));
+        target.Length > 0 && target[0] is not ('-' or '/') && !target.Split('/').Contains("..")
+        && target.All(c => char.IsAsciiLetterOrDigit(c) || "._/:=~-".Contains(c));
 }

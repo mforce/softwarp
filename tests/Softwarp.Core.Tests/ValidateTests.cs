@@ -46,8 +46,23 @@ public class ValidateTests
     [InlineData("A&B")]
     [InlineData("(A)")]
     [InlineData("Name!=Slow")]
+    [InlineData("/p:X=Y")]
+    [InlineData("/flp:logfile=/tmp/x")]
+    [InlineData("/abs/path")]
+    [InlineData("../x.csproj")]
+    [InlineData("tests/../../x")]
+    [InlineData("..")]
     public void TestTargetOutsideTheAllowPattern_IsRejected(string target) =>
         Assert.Single(Validation.Validate(Valid with { TestTargets = [target] }));
+
+    [Theory]
+    [InlineData("FullyQualifiedName~Foo.Bar")]
+    [InlineData("tests/test_x.py::TestA::test_b")]
+    [InlineData("./pkg/...")]
+    [InlineData("Name=Slow")]
+    [InlineData("a.b-c_d")]
+    public void TestTargetOfAnyStack_IsAccepted(string target) =>
+        Assert.Empty(Validation.Validate(Valid with { TestTargets = [target] }));
 
     [Fact]
     public void SpecWithoutTestTarget_IsRejected() =>
