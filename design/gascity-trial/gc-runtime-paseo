@@ -2,6 +2,7 @@
 # Prototype Gas City exec runtime: each gc session is a Paseo agent tab (softwarp trial).
 # Known gaps: gc's harness hooks (--settings) are dropped, because Paseo builds the harness argv itself.
 set -u
+umask 077
 # Never inherit the calling Paseo agent's workspace or identity.
 for v in $(compgen -e | grep '^PASEO'); do unset "$v"; done
 op=${1:-}; name=${2:-}
@@ -29,8 +30,10 @@ case "$op" in
       claude|codex|pi) ;;
       *) # not a harness (e.g. gc's control dispatcher): run it as a plain background process
         cwd=$(jq -r '.work_dir // empty' <<<"$cfg")
-        envs=(); while IFS= read -r kv; do envs+=("$kv"); done < <(jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cfg")
-        (cd "${cwd:-$PWD}" && exec env "${envs[@]}" setsid sh -c "$cmd" >>"$logf" 2>&1 </dev/null) &
+        # Export inside the subshell: values never appear in any argv.
+        (cd "${cwd:-$PWD}" || exit 1
+         while IFS= read -r kv; do export "$kv"; done < <(jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cfg")
+         exec setsid sh -c "$cmd" >>"$logf" 2>&1 </dev/null) &
         echo $! >"$pidf"; exit 0 ;;
     esac
     model=""; for ((i = 0; i < ${#argv[@]}; i++)); do [ "${argv[i]}" = --model ] && model=${argv[i+1]:-}; done
@@ -44,6 +47,9 @@ case "$op" in
       esac
     done
     cwd=$(jq -r '.work_dir // empty' <<<"$cfg"); args+=(--cwd "${cwd:-$PWD}" --env "PATH=$PATH")
+    # paseo run only takes env as argv (visible in ps), so refuse secret-looking vars instead of leaking them.
+    secret=$(jq -r '.env // {} | keys[] | select(test("KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL"; "i"))' <<<"$cfg" | head -1)
+    [ -z "$secret" ] || { echo "paseo shim refuses to pass $secret on a command line; serve it another way" >&2; exit 1; }
     while IFS= read -r kv; do args+=(--env "$kv"); done < <(jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cfg")
     prompt=$(jq -r '.nudge // empty' <<<"$cfg"); [ -n "$prompt" ] || prompt='Run `gc prime` and follow its instructions.'
     id=$(paseo "${args[@]}" "$prompt" | jq -r '.id // .agentId // empty') || exit 1
