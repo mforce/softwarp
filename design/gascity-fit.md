@@ -51,6 +51,8 @@ Read-only review, 2026-10-11. Nothing was installed or run. Paths: `GC:` = githu
 
 ## 4. Recommendation
 
+> **Superseded 2026-10-20:** the trial failed the decision rule; softwarp is built (c). See `gascity-trial.md` and DESIGN.md §18 row 11.
+
 **(a): build softwarp on Gas City as a pack plus small extensions.** Run the trial first; fall back to (c) if it fails.
 
 Reasons:

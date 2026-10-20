@@ -57,6 +57,9 @@ public sealed record SpecPackage(Digest Digest, ArtifactRef PublicSpec, Artifact
     ArtifactRef PrivateHoldouts);
 /// <summary>Counts only when HeadAfter == Head and the tree was clean for the whole run.
 /// A TargetedTests receipt also needs TestsExecuted > 0: a filter that matches nothing fails.</summary>
+/// <summary>Exit 0 passes; 75 (EX_TEMPFAIL) means the gate could not check, so it is re-run without spending a repair
+/// attempt, on its own small budget; any other code fails. Borrowed from Gas City's check steps.</summary>
+public enum GateVerdict { Pass, Fail, Unavailable }
 public sealed record GateReceipt(GateKind Kind, CommitId Head, CommitId HeadAfter, bool TreeClean,
     Digest Command, int ExitCode, int? TestsExecuted, ArtifactRef Log);
 public sealed record Publication(Uri Url, string Branch, CommitId Head, Digest Spec);

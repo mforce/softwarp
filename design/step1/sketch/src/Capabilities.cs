@@ -52,11 +52,18 @@ public sealed record Brief(Role Role, string ModelId, string Prompt, ArtifactRef
 public sealed record AgentHandle(string Id, string LogFile, string WatchCommand);
 public sealed record AgentObservation(bool Running, ImmutableArray<string> SideEffects);
 
-/// <summary>Ensure reconciles by operation id before launch; unknown outcome cannot launch twice.</summary>
+/// <summary>Ensure reconciles by operation id before launch; unknown outcome cannot launch twice. After an orchestrator
+/// crash it adopts the live agent for that operation and never starts a second one.
+/// The contract mirrors Gas City's runtime protocol (start, is-running, peek, nudge, stop; stop is idempotent), so
+/// each binding (Paseo tab, tmux, child process) passes one conformance check (`softwarp doctor spawn`).
+/// Bindings set cwd, model, effort and permission mode explicitly, never inherit the caller's, and never put
+/// environment values on a command line.</summary>
 public interface ISpawn
 {
     Task<AgentHandle> EnsureAsync(OperationId operation, Brief brief, ExecutionScope scope, CancellationToken ct);
     Task<AgentObservation> InspectAsync(AgentHandle handle, CancellationToken ct);
+    /// <summary>Last lines of the agent's output, for `softwarp status` and stall checks.</summary>
+    Task<string> PeekAsync(AgentHandle handle, int lines, CancellationToken ct);
     /// <summary>Returns null at the deadline; never blocks past it. A stalled worker is stopped, then replaced by policy.</summary>
     Task<AgentResult?> WaitAsync(AgentHandle handle, DateTimeOffset deadline, CancellationToken ct);
     Task StopAsync(AgentHandle handle, CancellationToken ct);

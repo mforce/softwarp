@@ -5,6 +5,7 @@ public static class Policy
 {
     public const int InvalidArtifactRetries = 1;
     public const int RevisionCycles = 2;
+    public const int UnavailableGateRetries = 3;
 
     /// <summary>
     /// First row that holds wins. Each row is one test in the planner table (no fakes needed).
@@ -29,6 +30,9 @@ public static class Policy
         // 10  A FAILED gate receipt exists for this exact head and command                  -> repair:
         //       Agent(Implement, RepairLog = gate log); after RevisionCycles repairs         -> Stop(NeedsHuman)
         //     (Checked BEFORE row 11, so a red gate is never just re-run on the same head.)
+        //     An Unavailable receipt (exit 75) re-runs the gates; after UnavailableGateRetries -> Stop(NeedsHuman).
+        //     Fail closed: a gate that cannot start, times out or errors yields no passing receipt, so no later
+        //     row is reachable. (Gas City closed an errored gate and started the next step: never do that.)
         // 11  Missing a passing Build or TargetedTests receipt for this head and command    -> Gates(head)
         // 12  Cleanup absent for this implementation                                        -> Agent(Cleanup)
         //     Cleanup may add commits; rows 9–11 then apply again to its head.

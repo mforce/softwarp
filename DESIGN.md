@@ -61,6 +61,10 @@ Only the bottom row changes between machines and repos.
 - Every input is pinned and recorded per run: the brief template version, skill versions, model ids, and the `WORKFLOW.md` commit. A run can be replayed with the same inputs.
 - Mechanical parts of skills move into scripts. poteto's verification CLI exists for this reason: without it, every agent rebuilt its own tooling, each in a different way.
 - Where orchestration needs judgment (for example, grouping 30 related issues), the orchestrator calls an agent for that one decision and stores the result as a file.
+- **Gates fail closed.** Exit 0 passes. Exit 75 means "could not check": the gate re-runs on a small budget of its own, without spending a repair attempt. Any other code fails. A gate that cannot start, times out or errors never lets a later station start. A red gate blocks every later station; there is no opt-in for that.
+- **No escape hatch.** No CLI flag skips or forces a gate or a transition. Harness deny rules block `--force` on the orchestrator's state commands too. In the Gas City trial, an agent-reachable `--force` passed any gate.
+- **Agents do no side effects.** Push, PR, comments and labels belong to the orchestrator, keyed by an operation id. In the Gas City trial, a crashed agent's replacement posted the same comment again.
+- **The target repo stays clean.** The factory writes nothing into the primary checkout: no files, no commits. Each run works in its own worktree.
 - **The state machine is code; the trigger can be anything.** A person, a schedule, or an LLM coordinator may start each transition (`softwarp advance <run>`). The CLI refuses any transition whose gate has not passed, and any artifact that fails its schema. This is how an existing coordinator agent can drive the factory without making the path non-deterministic. It follows poteto's pattern of a deterministic CLI inside an agent's workflow.
 
 ## 5. Trust ladder
@@ -160,7 +164,7 @@ Every station is idempotent. A run resumes from the label, the branch, the PR an
 | `tracker` | read, comment, label, link PR; **no create** | `gh` | same plugins |
 | `identity` | agents act under their own forge identity, never the maintainer's token | a GitHub App or a machine user | a separate token per role |
 | `isolate` | one workspace per item | `git worktree` in `~/.softwarp-slices/<repo>/<id>` | same |
-| `spawn(role, tier, brief, ws)` | start an agent with least privilege for its role | Paseo tab (never a workspace) | `claude -p` / `codex exec` with a log file |
+| `spawn(role, tier, brief, ws)` | start an agent with least privilege for its role. Operations follow Gas City's runtime protocol: start, is-running, peek, nudge, stop (idempotent); one conformance check (`softwarp doctor spawn`) per binding. After an orchestrator crash it adopts the live agent and never starts a second. It sets cwd, model, effort and permission mode explicitly, inherits nothing from the caller, and never puts environment values on a command line | Paseo tab (never a workspace). Onboarding pre-trusts the worktree root for Codex | `claude -p` / `codex exec` with a log file |
 | `status(handle)` | checked live | `get_agent_status` | `pgrep` + log tail |
 | `send(handle, msg)` | starts with `[coordinator]` | `send_agent_prompt` | resume the session |
 | `verify` | run the app as a user would | the repo's verification skill | a `run` command from `WORKFLOW.md` |
@@ -329,6 +333,7 @@ These numbers decide when a repo moves up a trust rung.
 | 8 | Pilot (build step 1)? | Cluckwork #1223: a growth cap for legacy files and a 1,500-line cap for test files. The maintainer's decision is recorded in the issue, and its acceptance criteria are checkable mutations. It re-runs the case that failed the pilot's acceptance check (§20). The Platform Hardening coordinator (Paseo agent `0e442060…`) drives it through the `softwarp` CLI, after its in-flight PRs merge. |
 | 9 | Agent identity? | A GitHub App. The maintainer logs out of `gh` on this machine. Agents get short-lived installation tokens. Git pushes over HTTPS through the `gh` credential helper and there are no SSH keys, so the logout also removes the maintainer's identity from `git push`. |
 | 10 | Orchestrator language? | C# on .NET 10, released as a Native AOT binary (one per OS, built in CI). The maintainer owns and reviews it in their main language, and it can use the same build guards as Cluckwork. |
+| 11 | Build or adopt (Gas Town, Gas City)? | Build (2026-10-20). The Gas City trial (`design/gascity-trial.md`) found its defaults open exactly where softwarp must hold: plain gate edges and errored gates let the next step start, `--force` passes any gate, and a crashed agent's replacement repeats side effects. It also has a heavy stack and packs with no license. Borrowed: exit 75, fail-closed gates, the runtime protocol for `spawn`, adopting live agents after a crash, per-role routing. Revisit when many agents in parallel matter. |
 
 ## 19. Open questions
 
@@ -360,5 +365,5 @@ A manual run of stations 3–7: one coordinator prompt, one worker per task, and
 - Vercel Foreman / course: https://vercel.com/academy/creating-a-software-factory
 - Matt Pocock skills: https://github.com/mattpocock/skills
 - noodle: https://github.com/poteto/noodle
-- Gas Town: https://github.com/gastownhall/gastown
+- Gas Town: https://github.com/gastownhall/gastown; Gas City: https://github.com/gastownhall/gascity (fit check `design/gascity-fit.md`, trial `design/gascity-trial.md`)
 - AGENTS.md, Agent Skills, MCP, GitHub Spec Kit, 12-Factor Agents

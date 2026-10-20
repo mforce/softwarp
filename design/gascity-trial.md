@@ -12,7 +12,7 @@ Started 2026-10-20. Plan: `gascity-fit.md` §6. Gas City v1.5.0 (checksum verifi
 
 By the §6 rule in `gascity-fit.md` ("build if closing a bead counts as an approval and no documented extension point can fix it"), check 2 points to **build**. A harness deny rule on `--force` would close it only as softly as the other deny rules.
 
-Recommendation: **build the C# sketch, and borrow Gas City's proven ideas:**
+Decision (maintainer, 2026-10-20): **build**. Recommendation was: **build the C# sketch, and borrow Gas City's proven ideas:**
 - exit 75 for "could not check", which costs no attempt;
 - scope-abort semantics;
 - per-step `run_target` routing;
@@ -117,11 +117,6 @@ Problems:
 - Each `paseo run --cwd <dir>` from the shim created a Paseo directory workspace (3 for the rig in 64 s). Archived after the trial.
 - My own `pkill -f control-dispatcher` matched my shell's command line and killed it. Use PIDs.
 
-## Left in place (remove after the decision)
+## Cleanup (2026-10-20)
 
-- `~/gc-trial`: binaries, city, rig clone, logs, `out/` markers.
-- `~/.dolt` and `~/.beads`, created by the trial binaries.
-- `~/.local/share/systemd/user/gascity-supervisor-home-35658b9d.service` (disabled).
-- `~/.codex/config.toml`: trust entry for the rig (backup `config.toml.bak.20261020T044018`).
-- GitHub: private repo `mforce/softwarp-trial`, with branch `softwarp/1` and 3 comments on issue 1.
-- Paseo: archived `gc:` agents and the archived workspaces.
+Removed: `~/gc-trial`, `~/.dolt`, `~/.beads`, the systemd unit, the Codex trust entry (config matches the pre-trial state), and the trial's Claude and Pi session transcripts. Paseo `gc:` agents and the trial workspaces are archived. The private repo `mforce/softwarp-trial` is left for the maintainer to delete: the `gh` token has no `delete_repo` scope.
