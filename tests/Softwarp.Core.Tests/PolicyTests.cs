@@ -63,6 +63,10 @@ public class PolicyTests
     }
 
     [Fact]
+    public void Row01_PrWithNoSpecPackageAtAll_Stops() =>
+        AssertStops(Published() with { Spec = null }, row: 1);
+
+    [Fact]
     public void Row02_IntentWithoutReceipt_ReconcilesBeforeAnythingElse()
     {
         var operation = new OperationId("op-7");
@@ -132,11 +136,11 @@ public class PolicyTests
         Assert.IsType<NextAction.AwaitMaintainer>(Decide(Approved() with { SpecPostedAt = null }, row: 7));
 
     [Fact]
-    public void Row07_Revise_RespecifiesWithTheMaintainersComment()
+    public void Row07_Revise_RespecifiesThePackageWithTheMaintainersComment()
     {
         var revise = Comment(MaintainerVerb.Revise);
         var action = Decide(SpecPosted() with { Maintainer = [revise] }, row: 7);
-        Assert.Equal(revise, Assert.IsType<NextAction.Specify>(action).Revise);
+        Assert.Equal(new SpecRevision(Package, revise), Assert.IsType<NextAction.Specify>(action).Revise);
     }
 
     [Fact]

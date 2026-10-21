@@ -18,34 +18,34 @@ public static class Validation
         Require(!spec.Criteria.IsEmpty, "the spec has no acceptance criterion");
         Require(!spec.TestTargets.IsEmpty, "the spec has no test target");
         foreach (var c in spec.Criteria)
-            Require(!string.IsNullOrWhiteSpace(c.Id) && !string.IsNullOrWhiteSpace(c.Text), $"criterion '{c.Id}' has an empty field");
+            Require(!string.IsNullOrWhiteSpace(c.Id) && !string.IsNullOrWhiteSpace(c.Text), $"criterion '{Quote(c.Id)}' has an empty field");
         foreach (var t in spec.Tickets)
-            Require(!string.IsNullOrWhiteSpace(t.Id) && !string.IsNullOrWhiteSpace(t.Text), $"ticket '{t.Id}' has an empty field");
+            Require(!string.IsNullOrWhiteSpace(t.Id) && !string.IsNullOrWhiteSpace(t.Text), $"ticket '{Quote(t.Id)}' has an empty field");
         foreach (var h in spec.Holdouts)
-            Require(!string.IsNullOrWhiteSpace(h.Scenario) && !string.IsNullOrWhiteSpace(h.Expected), $"a holdout for '{h.CriterionId}' has an empty field");
+            Require(!string.IsNullOrWhiteSpace(h.Scenario) && !string.IsNullOrWhiteSpace(h.Expected), $"a holdout for '{Quote(h.CriterionId)}' has an empty field");
         foreach (var id in Duplicates(spec.Criteria.Select(c => c.Id)))
-            errors.Add($"criterion id '{id}' is not unique");
+            errors.Add($"criterion id '{Quote(id)}' is not unique");
         foreach (var id in Duplicates(spec.Tickets.Select(t => t.Id)))
-            errors.Add($"ticket id '{id}' is not unique");
+            errors.Add($"ticket id '{Quote(id)}' is not unique");
 
         var criteria = spec.Criteria.Select(c => c.Id).ToHashSet();
         foreach (var h in spec.Holdouts.Where(h => !criteria.Contains(h.CriterionId)))
-            errors.Add($"a holdout refers to unknown criterion '{h.CriterionId}'");
+            errors.Add($"a holdout refers to unknown criterion '{Quote(h.CriterionId)}'");
 
         var tickets = spec.Tickets.Select(t => t.Id).ToHashSet();
         foreach (var t in spec.Tickets)
         foreach (var blocker in t.BlockedBy.Where(b => !tickets.Contains(b)))
-            errors.Add($"ticket '{t.Id}' is blocked by unknown ticket '{blocker}'");
+            errors.Add($"ticket '{Quote(t.Id)}' is blocked by unknown ticket '{Quote(blocker)}'");
 
         var ordered = new HashSet<string>();
         while (spec.Tickets.FirstOrDefault(t => !ordered.Contains(t.Id)
                    && t.BlockedBy.All(b => ordered.Contains(b) || !tickets.Contains(b))) is { } next)
             ordered.Add(next.Id);
         var cyclic = spec.Tickets.Select(t => t.Id).Where(id => !ordered.Contains(id)).ToList();
-        Require(cyclic.Count == 0, $"tickets {string.Join(", ", cyclic)} are in or behind a blocking cycle");
+        Require(cyclic.Count == 0, $"tickets {Quote(string.Join(", ", cyclic))} are in or behind a blocking cycle");
 
         foreach (var target in spec.TestTargets.Where(t => !IsSafeTestTarget(t)))
-            errors.Add($"test target '{target}' is empty, starts with '-' or '/', has a '..' segment, or has a character outside letters, digits and ._/:=~-");
+            errors.Add($"test target '{Quote(target)}' is empty, starts with '-' or '/', has a '..' segment, or has a character outside letters, digits and ._/:=~-");
         return errors.ToImmutable();
     }
 
@@ -61,6 +61,19 @@ public static class Validation
         if (string.IsNullOrWhiteSpace(triage.RedundancySearch)) errors.Add("triage skipped the redundancy search");
         return errors.ToImmutable();
     }
+
+    /// <summary>Every rule the cleanup output breaks; empty means valid.</summary>
+    public static ImmutableArray<string> Validate(CleanupOutput cleanup)
+    {
+        var errors = ImmutableArray.CreateBuilder<string>();
+        if (string.IsNullOrWhiteSpace(cleanup.PrTitle) || cleanup.PrTitle.Contains('\n'))
+            errors.Add("the PR title is empty or longer than one line");
+        if (string.IsNullOrWhiteSpace(cleanup.PrBody)) errors.Add("the PR body is empty");
+        return errors.ToImmutable();
+    }
+
+    // An agent can make its text long and its violations many, so a violation quotes only the start of the text.
+    static string Quote(string agentText) => agentText.Length <= 60 ? agentText : $"{agentText[..60]}...";
 
     static IEnumerable<string> Duplicates(IEnumerable<string> ids) =>
         ids.CountBy(id => id).Where(group => group.Value > 1).Select(group => group.Key);

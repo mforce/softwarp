@@ -31,7 +31,7 @@ public static class Policy
         if (e.Unresolved is { } op) return (Rule.UnknownOutcome, new NextAction.Reconcile(op));
         if (e.Worker is { } worker) return (Rule.WorkerRunning, new NextAction.AwaitAgent(worker));
 
-        var epoch = e.Maintainer.Count(c => c.Verb == MaintainerVerb.Resume && IsMaintainer(run, c));
+        var epoch = Epoch(e);
         var thisEpoch = e.Attempts.Where(a => a.Epoch == epoch).ToList();
         int Revisions(ActionKind kind) =>
             thisEpoch.Count(a => a.Action == kind && a.Revision && a.Outcome == AttemptOutcome.Completed);
@@ -52,14 +52,14 @@ public static class Policy
                 _ => Stop("triage asks for a human"),
             });
 
-        if (e.Spec is not { } package) return (Rule.Spec, Dispatch(ActionKind.Spec, new NextAction.Specify(null)));
+        if (e.Spec is not { } package) return (Rule.Spec, Dispatch(ActionKind.Spec, new NextAction.Specify(triage, null)));
         var decision = e.SpecPostedAt is { } posted ? Decision(run, package, e.Maintainer, posted) : null;
         if (decision is null)
             return (Rule.Approval, new NextAction.AwaitMaintainer(package));
         if (decision.Verb == MaintainerVerb.Revise)
             return (Rule.Approval, Revisions(ActionKind.Spec) >= RevisionCycles
                 ? Stop($"the spec was revised {RevisionCycles} times this epoch")
-                : Dispatch(ActionKind.Spec, new NextAction.Specify(decision)));
+                : Dispatch(ActionKind.Spec, new NextAction.Specify(triage, new SpecRevision(package, decision))));
         var approved = new ApprovedSpec(package, decision);
 
         if (HeadProblem(e) is { } problem) return (Rule.HeadIntact, Stop(problem));
@@ -95,12 +95,17 @@ public static class Policy
                 : Dispatch(ActionKind.Cleanup, new NextAction.Cleanup(approved, head)));
         }
 
-        if (e.Pr is not { } pr) return (Rule.Publish, new NextAction.Publish(approved, head));
+        if (e.Pr is not { } pr) return (Rule.Publish, new NextAction.Publish(approved, head, cleanup));
         if (pr.Branch != run.Branch) return (Rule.Publish, Stop($"the PR is on {pr.Branch}, not the run branch {run.Branch}"));
         if (pr.Spec != package.Digest) return (Rule.Publish, Stop("the PR was published for another spec package"));
         if (pr.Head != head) return (Rule.Publish, Stop("the PR head differs from the run head"));
         return (Rule.Complete, new NextAction.Complete(pr));
     }
+
+    /// <summary>The number of maintainer `/softwarp resume` comments: attempts and gate runs record the epoch they began
+    /// in.</summary>
+    public static int Epoch(Evidence e) =>
+        e.Maintainer.Count(c => c.Verb == MaintainerVerb.Resume && IsMaintainer(e.Manifest, c));
 
     /// <summary>
     /// The newest approve or revise for the package. Accepts only: a non-bot author whose repository role (fetched

@@ -7,7 +7,11 @@ static class Fixture
     public static readonly CommitId Head2 = new("head-2");
     public static readonly DateTimeOffset SpecPostedAt = new(2026, 10, 20, 12, 0, 0, TimeSpan.Zero);
     public static readonly Workflow Workflow = new(new("dotnet", ["build"]), new("dotnet", ["test", "--filter", "{targets}"]));
-    public static readonly RunManifest Manifest = new(new RunId("cluckwork-1223"), Trunk, "feat/1223-cap", "maintainer-id", Workflow);
+    public static readonly ItemId Item = new("mforce", "cluckwork", 1223);
+    public static readonly RunManifest Manifest = new(new RunId("cluckwork-1223"), Trunk, "feat/1223-cap", "maintainer-id", Workflow,
+        new WorkItem(Item, "Cap legacy file growth", "Legacy files grow without limit.", "rev-1",
+            new Uri("https://github.com/mforce/cluckwork/issues/1223")),
+        new Digest("workflow-digest"), new ModelPins("triage-model", "spec-model", "implement-model", "cleanup-model"));
     public static readonly SpecPackage Package = Spec("digest-1");
     public static readonly SpecPackage Package2 = Spec("digest-2");
     public static readonly AgentHandle Worker = new("agent-1", "/tmp/agent-1.log", "tail -f /tmp/agent-1.log");
@@ -37,7 +41,10 @@ static class Fixture
         Gates = [Receipt(GateKind.Build), Receipt(GateKind.TargetedTests)],
     };
 
-    public static Evidence CleanedUp() => GatesPassed() with { Cleanup = new(Package.Digest, Head1) };
+    public static Evidence CleanedUp() => GatesPassed() with
+    {
+        Cleanup = new(Package.Digest, Head1, "Cap legacy file growth", "Closes #1223."),
+    };
 
     public static Evidence Published() => CleanedUp() with
     {

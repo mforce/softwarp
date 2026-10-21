@@ -112,6 +112,20 @@ public class ValidateTests
         TestTargets = ["a b"],
     }).Length);
 
+    [Fact]
+    public void Violation_QuotesOnlyTheStartOfLongAgentText()
+    {
+        var id = new string('x', 10_000);
+        var violations = Validation.Validate(Valid with
+        {
+            Tickets = [new(id, "a", [id])],
+            Criteria = [.. Valid.Criteria, new(id, " ")],
+            TestTargets = [id + " "],
+        });
+        Assert.Equal(3, violations.Length);
+        Assert.All(violations, v => Assert.InRange(v.Length, 1, 300));
+    }
+
     static readonly TriageArtifact AgentReady = Fixture.Triaged().Triage!;
 
     static ImmutableArray<string> Violations(TriageArtifact triage) => Validation.Validate(triage, Fixture.Manifest);
@@ -151,4 +165,15 @@ public class ValidateTests
     [InlineData(TriageDecision.WontFix)]
     public void TriageThatStops_NeedsNoReproductionOrSearch(TriageDecision decision) => Assert.Empty(Violations(new(
         decision, new Reproduction(new CommitId("other"), "", ""), PriorRejectionSearch: "", RedundancySearch: "", Epoch: 0)));
+
+    [Fact]
+    public void CleanupWithTitleAndBody_HasNoViolation() =>
+        Assert.Empty(Validation.Validate(new CleanupOutput("Cap legacy file growth", "Closes #1223.")));
+
+    [Theory]
+    [InlineData(" ", "body")]
+    [InlineData("two\nlines", "body")]
+    [InlineData("title", "")]
+    public void CleanupWithoutUsablePrText_IsRejected(string title, string body) =>
+        Assert.Single(Validation.Validate(new CleanupOutput(title, body)));
 }
