@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Softwarp.Core\Softwarp.Core.csproj" />
+    <InternalsVisibleTo Include="Softwarp.Bindings.Tests" />
+  </ItemGroup>
+</Project>
