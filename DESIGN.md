@@ -225,6 +225,8 @@ One file in the repo root, in the Symphony format: a settings block plus a markd
   "trust": 1,
   "tracker": "github",
   "branch": "feat/{issue}-{slug}",
+  "test_report": "trx",
+  "targets_join": "|",
   "commands": {
     "build": ["…"],
     "test": ["…"],
@@ -244,6 +246,8 @@ Repo-specific guidance for every agent …
 
 - `branch` follows the repo's own convention and MUST contain `{issue}`, so softwarp can find its branch and PR again after a crash.
 - `commands` are argv arrays, never shell strings. `{targets}` is filled from the approved spec's test targets.
+- `test_report` is required: `trx` or `junit`. `test_targeted` writes that report into `/softwarp/out`, and the gate runner counts the tests that ran from it. A missing report or zero tests fails the gate.
+- `targets_join` is optional. When it is set, all approved targets are joined with it into the one argv element that `{targets}` stands for (a dotnet filter joins with `|`). When it is absent, each target is its own argv element. Each target is still validated on its own.
 - `review_bot`: `coderabbit`, `codex` or `none`. The local agent review always runs.
 
 **Where the commands come from**, in order: AGENTS.md → CI workflow files (they list the real commands) → manifests (`package.json`, `*.sln`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `Makefile`, `justfile`). If no source gives a command, ask once and write the answer into the file.
@@ -254,7 +258,7 @@ Each rule is **enforced** (code blocks the action) or **instructed** (prompt onl
 
 | Rule | Mode |
 |------|------|
-| Never merge (rungs 0–2). Never push with an explicit refspec. | enforced (only the orchestrator pushes; pre-push guard) |
+| Never merge (rungs 0–2). Never push with an explicit refspec. The orchestrator's own push is the one exception: it pushes from its trusted bare clone with `refs/heads/<branch>:refs/heads/<branch>`, no `+` and no force, so no repository config can change what it pushes. | enforced (only the orchestrator pushes; pre-push guard) |
 | Never file issues without approval; offer a batch at the end. | enforced (`tracker` has no `create`) |
 | Every coordinator prompt starts with `[coordinator]`. | enforced (`send` adds it) |
 | Push when the build is clean and targeted tests pass, then prove. Fixes are new commits, never force-pushes. | enforced (station order) |
@@ -264,7 +268,8 @@ Each rule is **enforced** (code blocks the action) or **instructed** (prompt onl
 | Call the user "the maintainer". | instructed |
 | Agents never use the maintainer's token. | enforced (`identity` binding) |
 | An approval counts only as a forge comment `/softwarp approve <digest>` that quotes the current spec digest, posted after the spec by the maintainer's account (a non-bot admin, matched by account id) and edited by nobody else. Nothing local counts, `decisions.tsv` included. This covers specs, scope changes, extra issues and ceiling raises. softwarp checks it again just before every push. | enforced (`Policy.Explain` on forge facts) |
-| Agents run in their harness's sandbox: writes only in the run's worktree; reads blocked for the App key, holdouts, the run store, `~/.ssh` and `gh` config. Agents never run Docker (Docker access defeats any sandbox); Docker-based tests run as gates. | enforced (`spawn` binding) |
+| Agents run in their harness's sandbox: writes only in the run's worktree; reads blocked for the App key, holdouts, the run store, `~/.ssh` and `gh` config. Agents never run Docker (Docker access defeats any sandbox). Docker-backed tests never run as gates; CI proves them. | enforced (`spawn` binding) |
+| Gates run in a sandbox: bubblewrap inside a systemd user scope with memory, task and runtime caps; network off; environment cleared, systemd-run's own included (every process in the sandbox can read the environment bwrap started with, so systemd-run gets only `PATH`, `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`); the home hidden except the maintainer's `~/.nuget/packages` and the configured toolchain directories inside the home, all bound read-only; the worktree writable and its `.git` read-only. softwarp reads the implementer's repository only in the same sandbox with the worktree read-only: the clean check, and the import into the trusted clone, whose `git-upload-pack --strict` runs there, so no path the repository names resolves on the host. Every git command has a timeout. Without bwrap or a user systemd manager the gate exits 75. Before gates, a trusted fetch fills the package cache from the lock files and project SDK references, read as data, through a synthetic project outside the repository, with its own NuGet.Config and no repository code. Packages that the pinned trunk's lock files do not name are capped per run and recorded for the maintainer. NuGet audit is off in gates and stays in CI. | enforced (gate runner, git isolation) |
 | Agents never change trunk protection or rulesets. The maintainer changes them, and each change is recorded in the run log. | enforced (identity has no admin rights) + instructed |
 
 ## 13. Loops
@@ -345,6 +350,7 @@ These numbers decide when a repo moves up a trust rung.
 | 14 | Isolation in step 1? | Harness sandboxes (Claude Code, Codex) with write and read limits, from step 1. Agents never run Docker. A separate OS user only if the sandbox proves too weak (2026-10-20). |
 | 15 | Branch names? | The repo's own convention, set in `WORKFLOW.md` (`branch`), containing the issue number (2026-10-20). |
 | 16 | PRs per run? | One. A spec with several tickets goes to one implementer, ordered by their blocking edges (2026-10-20). |
+| 17 | Gate sandbox, network and packages? | The maintainer, 2026-10-22: "all recommended". (1) Gates run with the network off. Before gates, a trusted fetch downloads packages from the repository's lock files and project SDK references through a synthetic project outside the repository, and runs no repository code. softwarp commits its own lock files. (2) The gate runner sets `NuGetAudit=false`; audit stays in CI. (3) Docker-backed tests never run as gates; CI proves them. (4) The systemd user scope (memory, task and runtime caps) is required. Without it or bwrap, the gate fails closed with exit 75. (5) Gates bind the maintainer's `~/.nuget/packages` read-only. (6) `WORKFLOW.md` gains `targets_join`: all approved targets are joined into the one argv element `{targets}` stands for (dotnet uses `\|`), and each target is still validated on its own. (7) A timed-out gate records the reserved exit code `TimedOut = -2`, next to `RefusedLog = -1`. Timeouts are 30 minutes for build and 30 minutes for targeted tests, configurable. |
 
 ## 19. Open questions
 
