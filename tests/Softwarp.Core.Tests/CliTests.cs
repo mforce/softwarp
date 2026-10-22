@@ -59,9 +59,9 @@ public sealed class CliTests : IDisposable
     [Fact]
     public async Task AMachineConfigTheCompositionRefuses_IsInvalidInputAndSaysWhy()
     {
-        var (exit, _, stderr) = await RunAsync(() => throw new InvalidOperationException("no tracker binding (slice 2b-2)"), "status", "x");
+        var (exit, _, stderr) = await RunAsync(() => throw new InvalidOperationException("no tracker binding (slice 2b-3)"), "status", "x");
         Assert.Equal(2, exit);
-        Assert.Equal("softwarp: no tracker binding (slice 2b-2)\n", stderr);
+        Assert.Equal("softwarp: no tracker binding (slice 2b-3)\n", stderr);
     }
 
     [Fact]

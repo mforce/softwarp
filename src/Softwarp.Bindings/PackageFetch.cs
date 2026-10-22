@@ -10,16 +10,18 @@ namespace Softwarp.Bindings;
 /// reads: it names packages and lock files, never raw restore output or a host path outside the worktree.</summary>
 public sealed class FetchRefusedException(string message) : Exception(message);
 
-/// <summary>Fills the NuGet cache that gates see read-only, before a gate and outside the sandbox, so gates can restore
-/// with the network off. It reads packages.lock.json files and project `Sdk="Name/Version"` references as data, and
-/// restores what the cache lacks through a synthetic project of PackageDownload items in a runner-owned directory, so
-/// no repository code runs while the network is on. The restore reads only a NuGet.Config the fetch writes itself, with
-/// one source and no credentials, never the maintainer's or the repository's. The implementer chooses the worktree's
-/// lock files, so packages the pinned trunk's lock files do not name are capped per run and reported.</summary>
-/// <param name="packages">The NuGet global packages folder the sandbox binds.</param>
+/// <summary>Fills softwarp's package cache, which gates see read-only, before a gate and outside the sandbox, so gates
+/// can restore with the network off. It reads packages.lock.json files and project `Sdk="Name/Version"` references as
+/// data, and restores what the cache lacks through a synthetic project of PackageDownload items in a runner-owned
+/// directory, so no repository code runs while the network is on. The restore reads only a NuGet.Config the fetch
+/// writes itself, with one source and no credentials, never the maintainer's or the repository's. The implementer
+/// chooses the worktree's lock files, so packages the pinned trunk's lock files do not name are capped per run and
+/// reported.</summary>
+/// <param name="sandbox">The sandbox gates run in. The fetch fills its <see cref="Sandbox.Packages"/>, the one cache the
+/// sandbox binds.</param>
 /// <param name="scratch">A directory only the runner writes.</param>
 /// <param name="source">The one package source the restore may use.</param>
-public sealed partial class PackageFetch(GitIsolation git, string packages, string scratch, int maxNewPackages,
+public sealed partial class PackageFetch(GitIsolation git, Sandbox sandbox, string scratch, int maxNewPackages,
     string source = PackageFetch.NuGetOrg, string dotnet = "/usr/bin/dotnet")
 {
     public const string NuGetOrg = "https://api.nuget.org/v3/index.json";
@@ -83,7 +85,7 @@ public sealed partial class PackageFetch(GitIsolation git, string packages, stri
             // from any parent directory, and attach to build nodes another process left running; it does none of that.
             var restore = await Tool.ReadAsync(dotnet,
             [
-                "restore", project, "--packages", packages, "--configfile", config, "-noAutoResponse", "--disable-build-servers",
+                "restore", project, "--packages", sandbox.Packages, "--configfile", config, "-noAutoResponse", "--disable-build-servers",
                 "-p:ImportDirectoryBuildProps=false", "-p:ImportDirectoryBuildTargets=false",
                 "-p:ImportDirectoryPackagesProps=false", "-p:NuGetAudit=false",
             ], timeout, ct, directory);
@@ -173,7 +175,7 @@ public sealed partial class PackageFetch(GitIsolation git, string packages, stri
     }
 
     /// <summary>NuGet marks a package complete in the global packages folder with this file.</summary>
-    bool Cached((string Id, string Version) package) => File.Exists(Path.Combine(packages, package.Id, package.Version, ".nupkg.metadata"));
+    bool Cached((string Id, string Version) package) => File.Exists(Path.Combine(sandbox.Packages, package.Id, package.Version, ".nupkg.metadata"));
 
     static string Name((string Id, string Version) package) => $"{package.Id}@{package.Version}";
 

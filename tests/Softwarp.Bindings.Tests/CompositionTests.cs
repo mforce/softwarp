@@ -40,17 +40,58 @@ public sealed class CompositionTests : IDisposable
     {
         File.WriteAllText(Config, Valid);
         var message = Assert.Throws<InvalidOperationException>(() => Composition.Create(Config)).Message;
-        Assert.Contains("no tracker binding (slice 2b-2)", message);
-        Assert.Contains("no agent spawn binding (slice 2b-3)", message);
+        Assert.Contains("no agent spawn binding (slice 2b-2)", message);
+        Assert.Contains("no tracker binding (slice 2b-3)", message);
+    }
+
+    [Theory]
+    [InlineData("/no-such-softwarp-home")]
+    [InlineData(".")] // a directory that exists, named relative to the working directory
+    public void HomeThatIsMissingOrRelative_FailsClosedBeforeAnyPathIsBuilt(string home)
+    {
+        File.WriteAllText(Config, Valid);
+        using var environment = GitRemote.Planted(new Dictionary<string, string> { ["HOME"] = home });
+        Assert.Contains("home directory", Assert.Throws<InvalidOperationException>(() => Composition.DefaultPath).Message);
+        Assert.Contains("home directory", Assert.Throws<InvalidOperationException>(() => Composition.Bind(Config)).Message);
     }
 
     [Fact]
-    public void HomeThatDoesNotExist_FailsClosedBeforeAnyPathIsBuilt()
+    public void ToolchainThatOverlapsSoftwarpsPackageCache_IsRefusedByBind()
     {
-        File.WriteAllText(Config, Valid);
-        using var environment = GitRemote.Planted(new Dictionary<string, string> { ["HOME"] = Path.Combine(root, "no-such-home") });
-        Assert.Contains("home directory", Assert.Throws<InvalidOperationException>(() => Composition.DefaultPath).Message);
-        Assert.Contains("home directory", Assert.Throws<InvalidOperationException>(() => Composition.Bind(Config)).Message);
+        // The home sits outside the config's directory, so the toolchain can overlap only ~/.softwarp.
+        var home = Directory.CreateTempSubdirectory("softwarp-home-").FullName;
+        try
+        {
+            var cache = Directory.CreateDirectory(Path.Combine(home, ".softwarp", "packages")).FullName;
+            using var environment = GitRemote.Planted(new Dictionary<string, string> { ["HOME"] = home });
+            Assert.Contains($"toolchain '{cache}' overlaps {home}/.softwarp,", Refused(Valid.Replace("\"toolchains\": []", $"\"toolchains\": [\"{cache}\"]")));
+        }
+        finally
+        {
+            Directory.Delete(home, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("data/runs")]
+    [InlineData("data/slices")]
+    [InlineData("cfg")]
+    public void ToolchainAtAConfiguredStateDirectory_IsRefusedByBind(string directory)
+    {
+        var home = Directory.CreateTempSubdirectory("softwarp-home-").FullName;
+        try
+        {
+            foreach (var d in new[] { "data/runs", "data/slices", "cfg" }) Directory.CreateDirectory(Path.Combine(home, d));
+            using var environment = GitRemote.Planted(new Dictionary<string, string> { ["HOME"] = home });
+            var config = Path.Combine(home, "cfg", "machine.json");
+            File.WriteAllText(config, Valid.Replace("\"/var/softwarp/runs\"", $"\"{home}/data/runs\", \"slices\": \"{home}/data/slices\"")
+                .Replace("\"toolchains\": []", $"\"toolchains\": [\"{home}/{directory}\"]"));
+            Assert.Contains($"toolchain '{home}/{directory}' overlaps {home}/{directory},", Assert.Throws<InvalidOperationException>(() => Composition.Bind(config)).Message);
+        }
+        finally
+        {
+            Directory.Delete(home, recursive: true);
+        }
     }
 
     [Fact]
@@ -87,8 +128,8 @@ public sealed class ToolchainTests : IDisposable
 {
     readonly string root = Directory.CreateTempSubdirectory("softwarp-home-").FullName;
     string Home => Path.Combine(root, "home", "maintainer");
-    string Runs => Path.Combine(root, "state", "runs");
-    string Slices => Path.Combine(root, "state", "slices");
+    string Runs => Path.Combine(Home, "data", "runs");
+    string Slices => Path.Combine(Home, "data", "slices");
 
     public ToolchainTests()
     {
@@ -107,7 +148,7 @@ public sealed class ToolchainTests : IDisposable
     public void Dispose() => Directory.Delete(root, recursive: true);
 
     string? Problem(string toolchain) => Composition.ToolchainProblem(toolchain.Replace("~", Home), Home,
-        [Runs, Slices, Path.Combine(Home, ".softwarp", "gates"), Path.Combine(Home, ".config", "softwarp")]);
+        [Runs, Slices, Path.Combine(Home, ".config", "softwarp")]);
 
     [Theory]
     [InlineData("~/.nvm/versions/node/v26.9.0")]
@@ -133,6 +174,10 @@ public sealed class ToolchainTests : IDisposable
     [InlineData("~/.docker", "overlaps")]
     [InlineData("~/.nuget", "overlaps")]
     [InlineData("~/.nuget/NuGet", "overlaps")]
+    [InlineData("~/.nuget/packages", "overlaps")]
+    [InlineData("~/data", "overlaps")]
+    [InlineData("~/data/runs/mforce", "overlaps")]
+    [InlineData("~/data/slices", "overlaps")]
     [InlineData("~/.softwarp", "overlaps")]
     [InlineData("~/.softwarp/gates", "overlaps")]
     [InlineData("~/.claude/projects", "~/.claude")]

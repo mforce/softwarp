@@ -14,7 +14,8 @@ public sealed class PackageFetchTests : IAsyncLifetime
     string Root => git.Root;
     string Feed => Path.Combine(Root, "feed");
     string Home => Path.Combine(Root, "home");
-    string Cache => Path.Combine(Home, ".nuget", "packages");
+    Sandbox Sandbox => new(GateLimits.Default, Home);
+    string Cache => Sandbox.Packages;
     string Scratch => Path.Combine(Root, "scratch");
     string Details => Path.Combine(Root, "Build.fetch.log");
     string Admissions => Path.Combine(Root, "Build.packages");
@@ -44,7 +45,7 @@ public sealed class PackageFetchTests : IAsyncLifetime
         (run, workspace) = await git.WorktreeAsync();
     }
 
-    PackageFetch Fetch(int cap = 20, string dotnet = "/usr/bin/dotnet") => new(git.Isolation, Cache, Scratch, cap, Feed, dotnet);
+    PackageFetch Fetch(int cap = 20, string dotnet = "/usr/bin/dotnet") => new(git.Isolation, Sandbox, Scratch, cap, Feed, dotnet);
 
     GateRequest Request(string log, params string[] admitted) =>
         new(workspace, run.Item.Id, run.Trunk, GateKind.Build, new CommandSpec("true", []), TestReport.Trx, [.. admitted], log, Admissions);
@@ -246,7 +247,7 @@ public sealed class PackageFetchTests : IAsyncLifetime
         Assert.Empty(Recorded);
     }
 
-    GateRunner Runner(int cap = 20) => new(new Sandbox(GateLimits.Default, Home), Scratch, Fetch(cap));
+    GateRunner Runner(int cap = 20) => new(Sandbox, Scratch, Fetch(cap));
 
     async Task<(GateRun Run, string Log)> GateAsync(GateRunner runner, CommandSpec command, CancellationToken? ct = null)
     {

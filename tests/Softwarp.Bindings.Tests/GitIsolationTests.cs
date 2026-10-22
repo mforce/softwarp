@@ -578,7 +578,7 @@ public sealed class GitEnvironmentTests : IDisposable
     public async Task TheMaintainersOwnNuGetConfig_IsNeverReadByTheFetch()
     {
         // The maintainer's config names a private feed that has the package; the fetch's one source does not.
-        var (cache, scratch, privateFeed, feed) = (Path.Combine(git.Root, "cache"), Path.Combine(git.Root, "scratch"),
+        var (scratch, privateFeed, feed) = (Path.Combine(git.Root, "scratch"),
             Directory.CreateDirectory(Path.Combine(git.Root, "private")).FullName, Directory.CreateDirectory(Path.Combine(git.Root, "feed")).FullName);
         File.Copy(Path.Combine(GitRemote.Home, ".nuget", "packages", "xunit.abstractions", "2.0.3", "xunit.abstractions.2.0.3.nupkg"),
             Path.Combine(privateFeed, "xunit.abstractions.2.0.3.nupkg"));
@@ -588,13 +588,14 @@ public sealed class GitEnvironmentTests : IDisposable
         var (run, workspace) = await git.WorktreeAsync();
         File.WriteAllText(Path.Combine(workspace.Path, "packages.lock.json"),
             """{ "version": 1, "dependencies": { "net10.0": { "xunit.abstractions": { "type": "Direct", "resolved": "2.0.3" } } } }""");
-        var fetch = new PackageFetch(git.Isolation, cache, scratch, 20, feed);
+        var sandbox = new Sandbox(GateLimits.Default, home);
+        var fetch = new PackageFetch(git.Isolation, sandbox, scratch, 20, feed);
         using (GitRemote.Planted(new Dictionary<string, string> { ["HOME"] = home }))
             await Assert.ThrowsAsync<FetchRefusedException>(() =>
                 fetch.EnsureAsync(new GateRequest(workspace, run.Item.Id, run.Trunk, GateKind.Build, new CommandSpec("true", []), TestReport.Trx,
                     [], Path.Combine(git.Root, "Build.log"), Path.Combine(git.Root, "Build.packages")), Path.Combine(git.Root, "Build.fetch.log"),
                     TimeSpan.FromMinutes(5), CancellationToken.None));
-        Assert.False(Directory.Exists(Path.Combine(cache, "xunit.abstractions")));
+        Assert.False(Directory.Exists(Path.Combine(sandbox.Packages, "xunit.abstractions")));
     }
 
     [Fact]

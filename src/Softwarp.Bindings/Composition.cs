@@ -37,10 +37,10 @@ public static class Composition
         }
     }
 
-    /// <summary>~/.config/softwarp/machine.json. Nothing under the home is bound into the sandbox, this file included.</summary>
+    /// <summary>~/.config/softwarp/machine.json. Its directory is never bound into a sandbox; the toolchain guard refuses it.</summary>
     public static string DefaultPath => Path.Combine(Home, ".config", "softwarp", "machine.json");
 
-    /// <summary>Fails closed, naming the bindings this build lacks: the tracker arrives in slice 2b-2 and the agent spawn
+    /// <summary>Fails closed, naming the bindings this build lacks: the agent spawn arrives in slice 2b-2 and the tracker
     /// in slice 2b-3. It still reads and checks the machine config and builds the bindings that exist, so a broken config
     /// is reported first.</summary>
     /// <exception cref="InvalidOperationException">The config is missing or invalid, or a binding is missing.</exception>
@@ -48,7 +48,7 @@ public static class Composition
     {
         _ = Bind(configPath);
         throw new InvalidOperationException(
-            "this softwarp build has no tracker binding (slice 2b-2) and no agent spawn binding (slice 2b-3), so it cannot run a factory step yet");
+            "this softwarp build has no agent spawn binding (slice 2b-2) and no tracker binding (slice 2b-3), so it cannot run a factory step yet");
     }
 
     /// <summary>The run store, git isolation and gate runner the machine config describes.</summary>
@@ -56,16 +56,17 @@ public static class Composition
     public static (MachineConfig Config, RunStore Store, GitIsolation Isolation, GateRunner Gates) Bind(string configPath)
     {
         var config = Load(configPath);
+        var home = Home;
         var limits = config.Gates ?? GateLimits.Default;
-        var (runs, slices) = (config.Runs ?? Path.Combine(Home, ".softwarp", "runs"), config.Slices ?? Path.Combine(Home, ".softwarp-slices"));
-        var scratch = Path.Combine(Home, ".softwarp", "gates");
-        string[] guarded = [runs, slices, scratch, Path.GetDirectoryName(Path.GetFullPath(configPath))!];
+        var (runs, slices) = (config.Runs ?? Path.Combine(home, ".softwarp", "runs"), config.Slices ?? Path.Combine(home, ".softwarp-slices"));
+        string[] guarded = [runs, slices, Path.GetDirectoryName(Path.GetFullPath(configPath))!];
         foreach (var toolchain in limits.Toolchains)
-            if (ToolchainProblem(toolchain, Home, guarded) is { } problem)
+            if (ToolchainProblem(toolchain, home, guarded) is { } problem)
                 throw new InvalidOperationException($"{configPath}: toolchain '{toolchain}' {problem}, so no gate may see it");
-        var sandbox = new Sandbox(limits, Home);
+        var sandbox = new Sandbox(limits, home);
         var isolation = new GitIsolation(slices, item => $"https://github.com/{item.Owner}/{item.Repo}.git", sandbox);
-        var gates = new GateRunner(sandbox, scratch, new PackageFetch(isolation, sandbox.Packages, scratch, limits.MaxNewPackages));
+        var scratch = Path.Combine(home, ".softwarp", "gates");
+        var gates = new GateRunner(sandbox, scratch, new PackageFetch(isolation, sandbox, scratch, limits.MaxNewPackages));
         return (config, new RunStore(runs), isolation, gates);
     }
 
@@ -73,8 +74,8 @@ public static class Composition
     /// when it may. It guards against a slip in the config: a directory outside the home (outside it, the sandbox shows
     /// /usr and /etc already and hides the rest on purpose, /run's sockets among them), a link, or a directory that
     /// overlaps softwarp's own state or a credential location.</summary>
-    /// <param name="guarded">softwarp's own directories: the run store, the slices root, the runner's scratch and the
-    /// machine config's directory.</param>
+    /// <param name="guarded">The directories the machine config can move: the run store, the slices root and the machine
+    /// config's directory. Everything else of softwarp's lives under ~/.softwarp, which is refused whole.</param>
     internal static string? ToolchainProblem(string toolchain, string home, IEnumerable<string> guarded)
     {
         if (!Path.IsPathFullyQualified(toolchain) || toolchain.Split('/').Contains("..")) return "is not an absolute path without '..'";
@@ -85,7 +86,7 @@ public static class Composition
             .Select((_, i) => "/" + string.Join('/', path.Split('/', StringSplitOptions.RemoveEmptyEntries)[..(i + 1)]));
         if (prefixes.Any(prefix => new FileInfo(prefix).LinkTarget is not null)) return "resolves through a link";
         if (!Directory.Exists(path)) return "is not a directory";
-        string[] secrets = [".ssh", ".gnupg", ".config", ".codex", ".paseo", ".docker", ".nuget/NuGet"];
+        string[] secrets = [".ssh", ".gnupg", ".config", ".codex", ".paseo", ".docker", ".nuget", ".softwarp"];
         if (guarded.Concat(secrets.Select(secret => Path.Combine(home, secret))).Select(Normal)
                 .FirstOrDefault(other => path == other || Inside(path, other) || Inside(other, path)) is { } overlap)
             return $"overlaps {overlap}";

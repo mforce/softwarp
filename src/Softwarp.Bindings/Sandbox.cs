@@ -28,9 +28,10 @@ public sealed record GateLimits(TimeSpan BuildTimeout, TimeSpan TargetedTestsTim
 
 /// <summary>Where every command that reads or runs the implementer's repository runs: a bubblewrap sandbox inside a
 /// systemd user scope, with the network off and the environment cleared, systemd-run's own included. It sees /usr and
-/// /etc read-only; an empty home with the NuGet cache and the configured toolchains bound back read-only; the worktree,
-/// with its .git directory read-only; and, for a gate, a fresh report directory at /softwarp/out. It never sees the run
-/// store, softwarp's trusted clone, the session bus or any other secret.</summary>
+/// /etc read-only; an empty home with softwarp's own package cache, at the NuGet cache path, and the configured
+/// toolchains bound back read-only; the worktree, with its .git directory read-only; and, for a gate, a fresh report
+/// directory at /softwarp/out. It never sees the run store, softwarp's trusted clone, the session bus or any other
+/// secret.</summary>
 /// <param name="home">The maintainer's home, hidden behind an empty tmpfs inside the sandbox.</param>
 public sealed class Sandbox(GateLimits limits, string home, string systemdRun = "/usr/bin/systemd-run",
     string bwrap = "/usr/bin/bwrap")
@@ -43,8 +44,10 @@ public sealed class Sandbox(GateLimits limits, string home, string systemdRun = 
 
     public GateLimits Limits => limits;
 
-    /// <summary>The NuGet global packages folder: the trusted fetch fills it, and the sandbox binds it read-only.</summary>
-    public string Packages => Path.Combine(home, ".nuget", "packages");
+    /// <summary>softwarp's own package cache, a NuGet global packages folder: the trusted fetch fills it, and the sandbox
+    /// binds it read-only at ~/.nuget/packages, where dotnet looks. The maintainer's own ~/.nuget/packages is never
+    /// bound.</summary>
+    public string Packages => Path.Combine(home, ".softwarp", "packages");
 
     /// <summary>bwrap resolves a bind source on the host, so a worktree or .git the implementer turned into a link would
     /// bind whatever it points at, and a .git file would send git to a directory the sandbox does not show.</summary>
@@ -126,7 +129,7 @@ public sealed class Sandbox(GateLimits limits, string home, string systemdRun = 
             "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin", "--ro-bind", "/etc", "/etc",
             "--proc", "/proc", "--dev", "/dev",
             "--size", $"{TmpBytes}", "--tmpfs", "/tmp", "--tmpfs", "/run", "--size", $"{HomeBytes}", "--tmpfs", home,
-            "--ro-bind-try", Packages, Packages,
+            "--ro-bind-try", Packages, Path.Combine(home, ".nuget", "packages"),
             .. limits.Toolchains.SelectMany(toolchain => new[] { "--ro-bind", toolchain, toolchain }),
             reports is null ? "--ro-bind" : "--bind", worktree, worktree, "--ro-bind", dotGit, dotGit,
             .. reports is null ? Array.Empty<string>() : ["--bind", reports, ReportDirectory],

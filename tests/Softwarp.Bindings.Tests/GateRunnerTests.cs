@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Softwarp.Core;
 
 namespace Softwarp.Bindings.Tests;
@@ -62,9 +63,29 @@ public sealed class GateRunnerTests : GateFixture
             "echo \"HOME: $(ls -A \"$HOME\" | tr '\\n' ' ')\"; exit $leak"));
 
         Assert.True(gate.ExitCode == 0, log);
-        // The home shows the NuGet cache and, when the worktree lives under home, the mount point leading to it.
+        // The home shows .nuget only when softwarp's package cache exists, and, when the worktree lives under home, the
+        // mount point leading to it.
         var under = Path.GetRelativePath(home, workspace.Path) is var relative && !relative.StartsWith("..") ? $"{relative.Split('/')[0]} " : "";
-        Assert.Contains($"HOME: .nuget {under}\n", log);
+        Assert.Matches($@"HOME: (\.nuget )?{Regex.Escape(under)}\n", log);
+    }
+
+    [Fact]
+    public async Task Gate_SeesOnlySoftwarpsPackageCache_AtTheNuGetPath()
+    {
+        var home = Path.Combine(git.Root, "home");
+        Directory.CreateDirectory(Path.Combine(home, ".nuget", "packages", "maintainers.own"));
+        Directory.CreateDirectory(Path.Combine(home, ".softwarp", "packages", "softwarps.own"));
+        var runner = new GateRunner(new Sandbox(GateLimits.Default, home), Scratch);
+
+        var (gate, log) = await GateAsync(Bash("""
+            fail=0
+            [ -d "$HOME/.nuget/packages/softwarps.own" ] || { echo "MISSING softwarp's cache"; fail=1; }
+            [ -e "$HOME/.nuget/packages/maintainers.own" ] && { echo "LEAK the maintainer's cache"; fail=1; }
+            [ -e "$HOME/.softwarp" ] && { echo "LEAK ~/.softwarp"; fail=1; }
+            exit $fail
+            """), runner);
+
+        Assert.True(gate.ExitCode == 0, log);
     }
 
     [Fact]
@@ -241,6 +262,26 @@ public sealed class GateRunnerTests : GateFixture
         Assert.Equal((75, (int?)null), (gate.ExitCode, gate.TestsExecuted));
         Assert.Contains("will not bind it", log);
         Assert.DoesNotContain("gh", log.Split('\n').Skip(2));
+    }
+
+    [Fact]
+    public void DotGitThatIsALink_IsRefusedByTheSandboxItself_BeforeAnyProcessStarts()
+    {
+        var dotGit = Path.Combine(workspace.Path, ".git");
+        Directory.Move(dotGit, Path.Combine(git.Root, "moved.git"));
+        Directory.CreateSymbolicLink(dotGit, git.Trusted);
+        var started = Path.Combine(git.Root, "started");
+        var launcher = Path.Combine(git.Root, "systemd-run");
+        GitRemote.Script(launcher, $"#!/bin/sh\ntouch '{started}'\n");
+        var sandbox = new Sandbox(GateLimits.Default, GitRemote.Home, launcher);
+
+        Assert.Contains("will not bind it", Assert.Throws<InvalidOperationException>(() =>
+            sandbox.UploadPack(workspace.Path, TimeSpan.FromMinutes(1))).Message);
+        Assert.Contains("will not bind it", Assert.Throws<InvalidOperationException>(() =>
+        {
+            _ = sandbox.RunAsync(workspace.Path, null, new CommandSpec("true", []), new Captured("x"), TimeSpan.FromMinutes(1), None);
+        }).Message);
+        Assert.False(File.Exists(started));
     }
 }
 
