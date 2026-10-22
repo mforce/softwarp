@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Softwarp.Bindings/Softwarp.Bindings.csproj" />
+    <Project Path="src/Softwarp.Cli/Softwarp.Cli.csproj" />
     <Project Path="src/Softwarp.Core/Softwarp.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">

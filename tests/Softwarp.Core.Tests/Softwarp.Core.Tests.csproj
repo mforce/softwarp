@@ -11,5 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Softwarp.Core\Softwarp.Core.csproj" />
+    <!-- The CLI's own behaviour is tested here, against the factory built from this project's fakes. -->
+    <ProjectReference Include="..\..\src\Softwarp.Cli\Softwarp.Cli.csproj" />
   </ItemGroup>
 </Project>

@@ -93,6 +93,18 @@
           "xunit.extensibility.core": "[2.9.3]"
         }
       },
+      "softwarp": {
+        "type": "Project",
+        "dependencies": {
+          "Softwarp.Bindings": "[1.0.0, )"
+        }
+      },
+      "softwarp.bindings": {
+        "type": "Project",
+        "dependencies": {
+          "Softwarp.Core": "[1.0.0, )"
+        }
+      },
       "softwarp.core": {
         "type": "Project"
       }
