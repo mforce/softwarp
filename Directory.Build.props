@@ -4,5 +4,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Gates restore offline from a cache filled by a trusted fetch that reads these lock files as data. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
+  <!-- softwarp drives git, bubblewrap and systemd: Linux only. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatform"><_Parameter1>linux</_Parameter1></AssemblyAttribute>
+  </ItemGroup>
 </Project>

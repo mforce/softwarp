@@ -23,7 +23,7 @@ public abstract record Intent
     public sealed record Agent(ActionKind Role, int Epoch, bool Revision, Digest? Spec) : Intent;
     public sealed record PostSpec(Digest Spec) : Intent;
     public sealed record Gates(Digest Spec, CommitId Head, int Epoch) : Intent;
-    public sealed record Push(CommitId Head) : Intent;
+    public sealed record Push(CommitId Head, int Epoch) : Intent;
     public sealed record OpenPr(Digest Spec, CommitId Head) : Intent;
 }
 
@@ -44,7 +44,8 @@ public abstract record Outcome
     public sealed record Done : Outcome;
     /// <summary>Reconcile found that the effect never happened, so the policy may choose it again.</summary>
     public sealed record NotRun : Outcome;
-    /// <summary>The agent returned no output, or output that broke its contract or failed validation.</summary>
+    /// <summary>The agent returned no output, or output that broke its contract or failed validation; or the remote
+    /// rejected a push.</summary>
     public sealed record Invalid(ImmutableArray<string> Errors) : Outcome;
     public sealed record Triaged(TriageArtifact Artifact) : Outcome;
     public sealed record Specified(SpecPackage Package) : Outcome;
@@ -76,6 +77,18 @@ public sealed record RunRecord(string Directory, RunManifest Manifest, Immutable
 
     public ImmutableArray<GateReceipt> Gates =>
         [.. Operations.Select(o => o.Outcome).OfType<Outcome.Gated>().SelectMany(g => g.Receipts)];
+
+    /// <summary>Every package from outside the pinned trunk that a gate runner recorded letting in, in any gate operation
+    /// of the run, one cut off by a crash included: what the maintainer is shown and what the run's cap counts.</summary>
+    public ImmutableArray<string> AdmittedPackages =>
+    [
+        .. Operations.Where(o => o.Intent is Intent.Gates)
+            .SelectMany(o => Enum.GetValues<GateKind>().Select(kind => RunStore.GatePackages(Directory, o.Id, kind)))
+            .SelectMany(RunStore.Packages).Distinct().Order(StringComparer.Ordinal),
+    ];
+
+    public ImmutableArray<Intent.Push> RejectedPushes =>
+        [.. Operations.Where(o => o.Outcome is Outcome.Invalid).Select(o => o.Intent).OfType<Intent.Push>()];
 
     /// <summary>The package's public part, hash-checked.</summary>
     public PublicSpec PublicSpec(SpecPackage package) => Load(package.PublicSpec, Contracts.Default.PublicSpec);
@@ -154,6 +167,15 @@ public sealed class RunStore(string root)
         && RunLease.Read(Directory(item)) is { } record && record.Manifest.Run == run
             ? record
             : null;
+
+    internal static string GatePackages(string runDirectory, OperationId operation, GateKind kind) =>
+        Path.Combine(runDirectory, "ops", operation.Value, $"{kind}.packages");
+
+    /// <summary>The packages a gate runner recorded in the file, one per line; none when it wrote nothing.</summary>
+    internal static IEnumerable<string> Packages(string file) =>
+        File.Exists(file) && new FileInfo(file).Length > 0
+            ? System.Text.Encoding.UTF8.GetString(ReadRecord(file)).Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            : [];
 
     internal static Digest Hash(ReadOnlySpan<byte> bytes) => new(Convert.ToHexStringLower(SHA256.HashData(bytes)));
 
@@ -251,6 +273,9 @@ public sealed class RunLease : IDisposable
 
     /// <summary>Where a gate's output goes, among the factory's own records.</summary>
     public string GateLog(OperationId operation, GateKind kind) => OperationFile(operation, $"{kind}.log");
+
+    /// <summary>Where a gate runner records the packages from outside the pinned trunk it lets in.</summary>
+    public string GatePackages(OperationId operation, GateKind kind) => RunStore.GatePackages(Directory, operation, kind);
 
     /// <summary>The agent's own directory, the one part of the run its sandbox may grant: the agent's input, schema,
     /// output and log, and nothing the factory trusts. The spec agent writes holdouts, so its directory sits under

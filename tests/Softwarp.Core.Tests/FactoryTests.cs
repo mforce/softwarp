@@ -448,6 +448,72 @@ public sealed class FactoryTests : IDisposable
         Assert.Equal(3, gates[1].TestsExecuted);
     }
 
+    [Fact]
+    public async Task TargetsJoin_FillsEveryTargetIntoOneArgvElement_AndTheRunnerGetsTheItemPinnedTrunkKindAndReport()
+    {
+        h.Git.WorkflowFile = h.Git.WorkflowFile.Replace("\"test_report\": \"trx\"", "\"test_report\": \"junit\", \"targets_join\": \"|\"");
+        var run = await h.ImplementedAsync();
+        await h.AdvanceAsync(run);
+
+        Assert.Equal(new[] { "test", "--filter", "FullyQualifiedName~GrowthCap|Category=Guards" }, h.Gates.Runs[1].Arguments);
+        Assert.Equal([(Harness.Item, Harness.Trunk, GateKind.Build, TestReport.Junit), (Harness.Item, Harness.Trunk, GateKind.TargetedTests, TestReport.Junit)],
+            h.Gates.Requests.Select(r => (r.Item, r.Trunk, r.Kind, r.Report)));
+    }
+
+    [Fact]
+    public async Task PackagesAGateRecordsLettingIn_AreAdmittedForEveryLaterGateOfTheRun()
+    {
+        var run = await h.ImplementedAsync();
+        h.Gates.Admit = command => command.Arguments[0] == "build" ? ["fresh.package@1.0.0"] : [];
+        h.Gates.ExitCode = command => command.Arguments[0] == "test" ? 1 : 0;
+        await h.AdvanceAsync(run); // build lets the package in; the tests fail
+        await h.AdvanceAsync(run); // the repair
+        h.Gates.Admit = _ => [];
+        h.Gates.ExitCode = _ => 0;
+        await h.AdvanceAsync(run); // gates on the repaired head
+
+        Assert.Equal(["fresh.package@1.0.0"], h.Record(run).AdmittedPackages.ToArray());
+        Assert.Equal([[], ["fresh.package@1.0.0"], ["fresh.package@1.0.0"], ["fresh.package@1.0.0"]],
+            h.Gates.Requests.Select(r => r.Admitted.ToArray()));
+    }
+
+    [Fact]
+    public async Task GateThatCrashesAfterRecordingWhatItAdmits_KeepsTheRecordThroughReconcile()
+    {
+        var run = await h.ImplementedAsync();
+        h.Gates.Admit = command => command.Arguments[0] == "build" ? ["fresh.package@1.0.0"] : [];
+        h.Gates.CrashAfterAdmit = true;
+        await Assert.ThrowsAsync<SimulatedCrash>(() => h.AdvanceAsync(run));
+        (h.Gates.Admit, h.Gates.CrashAfterAdmit) = (_ => [], false);
+
+        Assert.Equal(Rule.UnknownOutcome, (await h.AdvanceAsync(run)).Rule);
+        Assert.IsType<Outcome.NotRun>(h.Record(run).Operations[^1].Outcome);
+        await h.AdvanceAsync(run); // the gates again
+        Assert.Equal(["fresh.package@1.0.0"], h.Record(run).AdmittedPackages.ToArray());
+        Assert.Equal(["fresh.package@1.0.0"], h.Gates.Requests[^1].Admitted.ToArray());
+    }
+
+    [Fact]
+    public async Task RejectedPush_IsRecordedAndStopsWithoutPushingAgainUntilAResume()
+    {
+        var run = await h.ApprovedAsync();
+        await h.AdvanceUntilAsync(run, _ => h.Record(run).Newest<Outcome.Cleaned>() is not null);
+        await h.AdvanceAsync(run); // gates on the cleaned head
+        h.Git.Reject = true;
+
+        Assert.Equal(ExitStatus.WaitingOnMaintainer, (await h.AdvanceAsync(run)).Exit);
+        Assert.IsType<Outcome.Invalid>(h.Record(run).Operations[^1].Outcome);
+        var stopped = await h.AdvanceAsync(run);
+        Assert.Equal((ExitStatus.WaitingOnMaintainer, Rule.Publish), (stopped.Exit, stopped.Rule));
+        Assert.Contains("rejected the push", stopped.Message);
+        Assert.Equal(1, h.Git.Rejected);
+
+        h.Git.Reject = false;
+        h.Tracker.Comments.Add(h.Tracker.Comment(MaintainerVerb.Resume, null));
+        await h.AdvanceUntilAsync(run, r => r.Pr is not null);
+        Assert.Equal((1, 1, 1), (h.Git.Rejected, h.Git.Pushes, h.Tracker.PrsOpened));
+    }
+
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
@@ -458,7 +524,7 @@ public sealed class FactoryTests : IDisposable
         var after = commits ? new CommitId("gate-commit") : head;
         h.Gates.ExitCode = command =>
         {
-            if (command.Arguments[0] == "build") h.Git.Head = h.Git.Head! with { Head = after, Clean = clean };
+            if (command.Arguments[0] == "build") h.Git.Head = h.Git.Head! with { Head = after, Dirt = clean ? null : "untracked build.out" };
             return 0;
         };
 
@@ -525,7 +591,7 @@ public sealed class FactoryTests : IDisposable
     {
         var run = await h.ImplementedAsync();
         var head = h.Git.Head!.Head;
-        var after = dirty ? h.Git.Head with { Clean = false } : h.Git.Head with { Head = new CommitId("gate-made") };
+        var after = dirty ? h.Git.Head with { Dirt = "untracked build.out" } : h.Git.Head with { Head = new CommitId("gate-made") };
         h.Gates.Ran = (command, _) =>
         {
             if (command.Arguments[0] != (kind == GateKind.Build ? "build" : "test") || h.Git.Head == after) return;
@@ -541,7 +607,8 @@ public sealed class FactoryTests : IDisposable
         Assert.EndsWith($"{kind}.log", gate.Log.RelativePath);
         var stopped = await h.AdvanceAsync(run);
         Assert.Equal(ExitStatus.WaitingOnMaintainer, stopped.Exit);
-        Assert.Contains(dirty ? "uncommitted changes" : $"the {kind} gate moved the head while it ran", stopped.Message);
+        Assert.Contains(dirty ? "uncommitted changes" : $"the {kind} gate moved the head from {head.Value} to gate-made while it ran",
+            stopped.Message);
         Assert.Null(h.Tracker.Pr);
     }
 

@@ -14,7 +14,8 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
     internal const int MaxOutputBytes = 1 << 20;
     const int MaxViolations = 20, MaxViolationChars = 300;
     const int LogTailBytes = 8000;
-    const long MaxLogBytes = 64 << 20;
+    /// <summary>The largest gate log the factory hashes; a larger one fails its gate.</summary>
+    public const long MaxLogBytes = 64 << 20;
     static readonly Contracts C = Contracts.Default;
 
     /// <summary>Pins the item, trunk and WORKFLOW.md at trunk in a manifest, then claims the item. A retry adopts its
@@ -121,7 +122,8 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
         }
         return new Snapshot(record, facts, new Evidence(manifest, facts.Claim, unresolved, worker, facts.Maintainer,
             record.Attempts, record.Newest<Outcome.Triaged>()?.Artifact, spec, facts.SpecPostedAt, head,
-            record.Newest<Outcome.Implemented>()?.Artifact, record.Gates, record.Newest<Outcome.Cleaned>()?.Artifact, facts.Pr));
+            record.Newest<Outcome.Implemented>()?.Artifact, record.Gates, record.Newest<Outcome.Cleaned>()?.Artifact, facts.Pr,
+            record.RejectedPushes));
     }
 
     Task<AdvanceResult> ActAsync(Step s, NextAction action) => action switch
@@ -257,16 +259,20 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
         var op = s.Lease.Begin(frozen);
         var targets = s.Now.Record.PublicSpec(spec).TestTargets;
         var receipts = ImmutableArray.CreateBuilder<GateReceipt>();
+        var admitted = s.Now.Record.AdmittedPackages;
         foreach (var kind in Enum.GetValues<GateKind>())
         {
             var log = s.Lease.GateLog(op, kind);
             // Reconcile names the gate that was running as the last kind with a log, so the log must exist before the gate can crash.
             new FileStream(log, FileMode.CreateNew).Dispose();
-            var run = await gates.RunAsync(workspace, s.Manifest.Workflow.Command(kind).Expand(targets), log, s.Ct);
+            var packages = s.Lease.GatePackages(op, kind);
+            var run = await gates.RunAsync(new GateRequest(workspace, s.Manifest.Item.Id, s.Manifest.Trunk, kind,
+                s.Manifest.Workflow.Expand(kind, targets), s.Manifest.Workflow.TestReport, admitted, log, packages), s.Ct);
             var after = await isolation.ObserveAsync(s.Manifest, s.Ct)
                 ?? throw new InvalidOperationException("the worktree vanished while a gate ran");
             var receipt = Receipt(s, op, frozen, kind, after, run.ExitCode, run.TestsExecuted);
             receipts.Add(receipt);
+            admitted = [.. admitted.Union(RunStore.Packages(packages))];
             if (receipt.Verdict != GateVerdict.Pass || after.Head != head || !after.Clean) break;
         }
         s.Lease.Complete(op, new Outcome.Gated(receipts.ToImmutable()));
@@ -314,8 +320,13 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
     {
         if (await isolation.RemoteHeadAsync(s.Manifest, s.Ct) != publish.Head)
         {
-            var push = s.Lease.Begin(new Intent.Push(publish.Head));
-            await isolation.PushAsync(s.Manifest, publish.Head, push, s.Ct);
+            var push = s.Lease.Begin(new Intent.Push(publish.Head, s.Epoch));
+            if (!await isolation.PushAsync(s.Manifest, publish.Head, push, s.Ct))
+            {
+                s.Lease.Complete(push, new Outcome.Invalid([$"the remote rejected {publish.Head.Value} on {s.Manifest.Branch}"]));
+                return s.Result(ExitStatus.WaitingOnMaintainer,
+                    $"the remote rejected the push of {publish.Head.Value} to {s.Manifest.Branch}; fix the remote branch, then comment `/softwarp resume`");
+            }
             s.Lease.Complete(push, new Outcome.Done());
             return s.Result(ExitStatus.Ok, $"pushed {s.Manifest.Branch} at {publish.Head.Value}");
         }
@@ -340,8 +351,8 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
             Intent.OpenPr => Happened(facts.Pr is not null),
             Intent.Push push => Happened(await isolation.RemoteHeadAsync(s.Manifest, s.Ct) == push.Head),
             // A gate writes nothing outside the worktree, so an interrupted run is run again, unless git shows that it
-            // moved the head or dirtied the tree. Then the gate that wrote the last log is recorded as failed on what git
-            // shows, and the policy stops on it.
+            // moved the head or dirtied the tree. Then the gate whose log was created last is recorded as failed on what
+            // git shows, and the policy stops on it.
             Intent.Gates gated => await isolation.ObserveAsync(s.Manifest, s.Ct) is { } now && (now.Head != gated.Head || !now.Clean)
                 ? new Outcome.Gated([Receipt(s, id, gated, Enum.GetValues<GateKind>().LastOrDefault(kind =>
                     File.Exists(s.Lease.GateLog(id, kind))), now, GateReceipt.RefusedLog, null)])

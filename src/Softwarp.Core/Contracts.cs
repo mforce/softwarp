@@ -21,6 +21,7 @@ namespace Softwarp.Core;
     [
         typeof(StringValueJson.Run), typeof(StringValueJson.Hash), typeof(StringValueJson.Commit),
         typeof(StrictEnumJson<TriageDecision>), typeof(StrictEnumJson<GateKind>), typeof(StrictEnumJson<ActionKind>),
+        typeof(StrictEnumJson<TestReport>),
     ])]
 [JsonSerializable(typeof(RunManifest))]
 [JsonSerializable(typeof(TriageOutput))]

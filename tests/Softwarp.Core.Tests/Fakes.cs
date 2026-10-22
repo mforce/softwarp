@@ -1,9 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
 
-// The suite makes FIFOs, links to /dev/zero and unreadable files.
-[assembly: System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
-
 namespace Softwarp.Core.Tests;
 
 /// <summary>The process dies at this point: the exception escapes AdvanceAsync and the run lock is released.</summary>
@@ -74,6 +71,7 @@ sealed class FakeIsolation(CommitId trunk) : IIsolation
         ---
         {
           "branch": "feat/{issue}-{slug}",
+          "test_report": "trx",
           "commands": {
             "build": ["dotnet", "build"],
             "test_targeted": ["dotnet", "test", "--filter", "{targets}"]
@@ -85,6 +83,9 @@ sealed class FakeIsolation(CommitId trunk) : IIsolation
     public HeadObservation? Head { get; set; }
     public CommitId? Remote { get; private set; }
     public int Pushes { get; private set; }
+    /// <summary>When set, the remote rejects every push.</summary>
+    public bool Reject { get; set; }
+    public int Rejected { get; private set; }
     public bool CrashBeforePush { get; set; }
     public bool CrashAfterPush { get; set; }
     int commits;
@@ -93,19 +94,24 @@ sealed class FakeIsolation(CommitId trunk) : IIsolation
 
     public Task<Workspace> EnsureAsync(RunManifest run, CancellationToken ct)
     {
-        Head ??= new HeadObservation(run.Branch, trunk, Clean: true, DescendsFromTrunk: true);
+        Head ??= new HeadObservation(run.Branch, trunk, Dirt: null, DescendsFromTrunk: true);
         return Task.FromResult(new Workspace("/worktrees/cluckwork/1223"));
     }
 
     public Task<HeadObservation?> ObserveAsync(RunManifest run, CancellationToken ct) => Task.FromResult(Head);
     public Task<CommitId?> RemoteHeadAsync(RunManifest run, CancellationToken ct) => Task.FromResult(Remote);
 
-    public Task PushAsync(RunManifest run, CommitId head, OperationId operation, CancellationToken ct)
+    public Task<bool> PushAsync(RunManifest run, CommitId head, OperationId operation, CancellationToken ct)
     {
         if (CrashBeforePush) throw new SimulatedCrash();
+        if (Reject)
+        {
+            Rejected++;
+            return Task.FromResult(false);
+        }
         (Remote, Pushes) = (head, Pushes + 1);
         if (CrashAfterPush) throw new SimulatedCrash();
-        return Task.CompletedTask;
+        return Task.FromResult(true);
     }
 
     public CommitId Commit()
@@ -218,6 +224,11 @@ sealed class FakeSpawn(FakeIsolation git, CommitId trunk, FakeClock clock) : ISp
 sealed class FakeGates : IGates
 {
     public List<CommandSpec> Runs { get; } = [];
+    public List<GateRequest> Requests { get; } = [];
+    /// <summary>The packages from outside trunk each run records letting in, by command; none by default.</summary>
+    public Func<CommandSpec, string[]> Admit { get; set; } = _ => [];
+    /// <summary>When set, a run crashes right after it records what it admits.</summary>
+    public bool CrashAfterAdmit { get; set; }
     public bool Crash { get; set; }
     /// <summary>Written to every log after the command line.</summary>
     public string Output { get; set; } = "";
@@ -230,10 +241,17 @@ sealed class FakeGates : IGates
     /// <summary>Runs after each command has written its log, with the command and the log path.</summary>
     public Action<CommandSpec, string> Ran { get; set; } = (_, _) => { };
 
-    public Task<GateRun> RunAsync(Workspace workspace, CommandSpec command, string logFile, CancellationToken ct)
+    public Task<GateRun> RunAsync(GateRequest request, CancellationToken ct)
     {
+        var (command, logFile) = (request.Command, request.LogFile);
         if (Crash) throw new SimulatedCrash();
         Runs.Add(command);
+        Requests.Add(request);
+        if (Admit(command) is { Length: > 0 } admitted)
+        {
+            File.WriteAllLines(request.PackagesFile, admitted);
+            if (CrashAfterAdmit) throw new SimulatedCrash();
+        }
         var code = ExitCode(command);
         File.WriteAllText(logFile, $"$ {command.Executable} {string.Join(' ', command.Arguments)}\n{Output}exit {code}\n");
         if (LogBytes is { } size)

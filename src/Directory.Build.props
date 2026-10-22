@@ -1,0 +1,9 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <!-- The softwarp binary is published Native AOT for linux-x64. Every shipped project restores the same way for build and
+       publish, so a publish leaves the lock files as they are. -->
+  <PropertyGroup>
+    <PublishAot>true</PublishAot>
+    <RuntimeIdentifiers>linux-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+</Project>

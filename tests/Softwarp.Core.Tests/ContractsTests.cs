@@ -44,7 +44,7 @@ public class ContractsTests
         [
             new Intent.Claim(), new Intent.Agent(ActionKind.Implement, 2, true, Package.Digest),
             new Intent.Agent(ActionKind.Triage, 0, false, null), new Intent.PostSpec(Package.Digest),
-            new Intent.Gates(Package.Digest, Head1, 1), new Intent.Push(Head1), new Intent.OpenPr(Package.Digest, Head1),
+            new Intent.Gates(Package.Digest, Head1, 1), new Intent.Push(Head1, 0), new Intent.OpenPr(Package.Digest, Head1),
         ];
         foreach (var intent in intents) RoundTrips(intent, C.Intent);
         Outcome[] outcomes =
@@ -61,9 +61,9 @@ public class ContractsTests
     public void ReceiptsAndIntents_NameTheirVariantAndRejectUnknownMembers()
     {
         Assert.Equal("open-pr", JsonNode.Parse(Contracts.Write<Intent>(new Intent.OpenPr(Package.Digest, Head1), C.Intent))!["effect"]!.GetValue<string>());
-        Rejects<Intent>(new Intent.Push(Head1), C.Intent, o => o["force"] = true);
+        Rejects<Intent>(new Intent.Push(Head1, 0), C.Intent, o => o["force"] = true);
         Rejects<Outcome>(new Outcome.Done(), C.Outcome, o => o["pr"] = "https://example.com");
-        Rejects<Intent>(new Intent.Push(Head1), C.Intent, o => o["effect"] = "merge");
+        Rejects<Intent>(new Intent.Push(Head1, 0), C.Intent, o => o["effect"] = "merge");
     }
 
     [Fact]

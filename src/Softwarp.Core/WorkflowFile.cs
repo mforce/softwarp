@@ -48,10 +48,14 @@ public static class WorkflowFile
         }
         if (!commands.TestTargeted.Contains(Targets))
             errors.Add($"test_targeted must pass the approved test targets as a {Targets} argv element");
+        TestReport? report = settings.TestReport switch { "trx" => TestReport.Trx, "junit" => TestReport.Junit, _ => null };
+        if (report is null) errors.Add("test_report must be \"trx\" or \"junit\": the report test_targeted writes into /softwarp/out");
+        if (settings.TargetsJoin is { } join && (join.Length == 0 || join.Any(char.IsControl)))
+            errors.Add("targets_join must be a non-empty separator without control characters");
         if (errors.Count > 0) throw new FormatException($"WORKFLOW.md: {string.Join("; ", errors)}");
 
-        return new ParsedWorkflow(new Workflow(Spec(commands.Build), Spec(commands.TestTargeted)), settings.Branch,
-            warnings.ToImmutable());
+        return new ParsedWorkflow(new Workflow(Spec(commands.Build), Spec(commands.TestTargeted), report!.Value, settings.TargetsJoin),
+            settings.Branch, warnings.ToImmutable());
     }
 
     /// <summary>The run branch: `{issue}` becomes the issue number and `{slug}` a lowercase ASCII slug of the title.</summary>
@@ -105,7 +109,7 @@ public sealed record ParsedWorkflow(Workflow Workflow, string BranchTemplate, Im
 /// <summary>The front matter keys of DESIGN.md §11. Every key is listed so an unknown one is rejected.</summary>
 public sealed record WorkflowSettings(WorkflowCommands Commands, string Branch, int Trust = 1, string? Tracker = null,
     string? VerifySkill = null, string? ReviewBot = null, int? WipLimit = null,
-    ImmutableArray<WorkflowRoutine>? Routines = null);
+    ImmutableArray<WorkflowRoutine>? Routines = null, string? TestReport = null, string? TargetsJoin = null);
 public sealed record WorkflowCommands(ImmutableArray<string> Build, ImmutableArray<string> TestTargeted,
     ImmutableArray<string>? Test = null, ImmutableArray<string>? Lint = null, ImmutableArray<string>? Run = null,
     ImmutableArray<string>? ServicesUp = null);

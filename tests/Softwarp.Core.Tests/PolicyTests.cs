@@ -197,12 +197,12 @@ public class PolicyTests
     [InlineData("other-branch", true)]
     public void Row08_DefectiveWorktree_StopsBeforeAnyImplementerOrGate(string defect, bool implemented)
     {
-        var head = new HeadObservation(Manifest.Branch, implemented ? Head1 : Trunk, Clean: true, DescendsFromTrunk: true);
+        var head = new HeadObservation(Manifest.Branch, implemented ? Head1 : Trunk, Dirt: null, DescendsFromTrunk: true);
         AssertStops((implemented ? GatesPassed() : Approved()) with
         {
             Head = defect switch
             {
-                "dirty" => head with { Clean = false },
+                "dirty" => head with { Dirt = "changed work.txt" },
                 "off-trunk" => head with { DescendsFromTrunk = false },
                 _ => head with { Branch = "main" },
             },
@@ -224,7 +224,7 @@ public class PolicyTests
     public void Row09_FitWorktreeWithoutImplementation_Implements() =>
         Assert.IsType<NextAction.Implement>(Decide(Approved() with
         {
-            Head = new(Manifest.Branch, Trunk, Clean: true, DescendsFromTrunk: true),
+            Head = new(Manifest.Branch, Trunk, Dirt: null, DescendsFromTrunk: true),
         }, row: 9));
 
     [Fact]
@@ -522,6 +522,25 @@ public class PolicyTests
         Assert.Equal(Package, publish.Spec.Package);
         Assert.Equal(Head1, publish.Head);
     }
+
+    [Fact]
+    public void Row13_PushRejectedOnThisHeadThisEpoch_StopsInsteadOfPushingAgain() =>
+        Assert.Contains($"rejected the push of {Head1.Value}",
+            AssertStops(CleanedUp() with { RejectedPushes = [new(Head1, 0)] }, row: 13).Reason);
+
+    [Theory]
+    [InlineData("head-2", 0)]
+    [InlineData("head-1", 1)]
+    public void Row13_PushRejectedForAnotherHeadOrBeforeAResume_PublishesAgain(string head, int resumes)
+    {
+        var e = CleanedUp() with { RejectedPushes = [new(new CommitId(head), 0)] };
+        for (var i = 0; i < resumes; i++) e = Resumed(e);
+        Assert.IsType<NextAction.Publish>(Decide(e, row: 13));
+    }
+
+    [Fact]
+    public void TimedOutGate_Fails() =>
+        Assert.Equal(GateVerdict.Fail, Receipt(GateKind.Build, exitCode: GateReceipt.TimedOut).Verdict);
 
     [Fact]
     public void Row13_PrOnAnotherHead_StopsInsteadOfOverwriting()

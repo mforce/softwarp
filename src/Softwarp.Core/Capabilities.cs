@@ -37,8 +37,9 @@ public interface IIsolation
     Task<HeadObservation?> ObserveAsync(RunManifest run, CancellationToken ct);
     /// <summary>The run branch's head on the remote; null when it was never pushed.</summary>
     Task<CommitId?> RemoteHeadAsync(RunManifest run, CancellationToken ct);
-    /// <summary>Pushes the run branch at head: the branch the worktree is on, no refspec, no force.</summary>
-    Task PushAsync(RunManifest run, CommitId head, OperationId operation, CancellationToken ct);
+    /// <summary>Pushes the run branch at head, with no force. False when the remote rejects the update, for example
+    /// because its branch holds commits the head lacks; any other failure throws.</summary>
+    Task<bool> PushAsync(RunManifest run, CommitId head, OperationId operation, CancellationToken ct);
 }
 
 public sealed record TrunkSnapshot(CommitId Commit, string WorkflowFile);
@@ -70,10 +71,23 @@ public sealed record Brief(ActionKind Role, string ModelId, string Prompt, strin
 
 public interface IGates
 {
-    /// <summary>Runs the command as argv in the workspace, never through a shell, and writes its output to the log file.
-    /// The factory has already created the file, empty.</summary>
-    Task<GateRun> RunAsync(Workspace workspace, CommandSpec command, string logFile, CancellationToken ct);
+    /// <summary>Runs the command as argv in the workspace, never through a shell, and writes its output to the log file.</summary>
+    Task<GateRun> RunAsync(GateRequest request, CancellationToken ct);
 }
 
-/// <param name="TestsExecuted">How many tests ran, when the command runs tests.</param>
+/// <summary>One gate run.</summary>
+/// <param name="Item">The run's item.</param>
+/// <param name="Trunk">The run's pinned trunk commit; packages its lock files do not name count as new.</param>
+/// <param name="Report">The format a targeted-test command writes its report in; the runner counts the tests that ran
+/// from it.</param>
+/// <param name="Admitted">Every package from outside the pinned trunk that earlier gate runs of this run recorded letting
+/// in (<see cref="RunRecord.AdmittedPackages"/>).</param>
+/// <param name="LogFile">The factory has already created it, empty.</param>
+/// <param name="PackagesFile">Where the runner records, before it fetches anything, the packages from outside the pinned
+/// trunk it lets in, one `id@version` per line: a factory record that no agent is handed.</param>
+public sealed record GateRequest(Workspace Workspace, ItemId Item, CommitId Trunk, GateKind Kind, CommandSpec Command,
+    TestReport Report, ImmutableArray<string> Admitted, string LogFile, string PackagesFile);
+
+/// <param name="ExitCode">The command's exit code, or <see cref="GateReceipt.TimedOut"/>.</param>
+/// <param name="TestsExecuted">How many tests ran, when the command runs tests; null when no report says.</param>
 public sealed record GateRun(int ExitCode, int? TestsExecuted);

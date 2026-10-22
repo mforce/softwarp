@@ -95,7 +95,10 @@ public static class Policy
                 : Dispatch(ActionKind.Cleanup, new NextAction.Cleanup(approved, head)));
         }
 
-        if (e.Pr is not { } pr) return (Rule.Publish, new NextAction.Publish(approved, head, cleanup));
+        if (e.Pr is not { } pr)
+            return (Rule.Publish, e.RejectedPushes.Any(p => p.Head == head && p.Epoch == epoch)
+                ? Stop($"the remote rejected the push of {head.Value} to {run.Branch}; its branch may hold commits the head lacks")
+                : new NextAction.Publish(approved, head, cleanup));
         if (pr.Branch != run.Branch) return (Rule.Publish, Stop($"the PR is on {pr.Branch}, not the run branch {run.Branch}"));
         if (pr.Spec != package.Digest) return (Rule.Publish, Stop("the PR was published for another spec package"));
         if (pr.Head != head) return (Rule.Publish, Stop("the PR head differs from the run head"));
@@ -125,7 +128,7 @@ public static class Policy
     static string? HeadProblem(Evidence e) => e.Head switch
     {
         null => e.Implementation is null ? null : "the run has an implementation but no worktree head",
-        { Clean: false } => "the worktree has uncommitted changes",
+        { Dirt: { } dirt } => $"the worktree has uncommitted changes: {dirt}",
         { DescendsFromTrunk: false } => "the head does not descend from the pinned trunk",
         var head when head.Branch != e.Manifest.Branch => $"the worktree is on {head.Branch}, not {e.Manifest.Branch}",
         _ => null,
@@ -133,7 +136,7 @@ public static class Policy
 
     static string? Distrust(GateReceipt r, Workflow workflow) => r switch
     {
-        _ when r.HeadAfter != r.Head => $"the {r.Kind} gate moved the head while it ran",
+        _ when r.HeadAfter != r.Head => $"the {r.Kind} gate moved the head from {r.Head.Value} to {r.HeadAfter.Value} while it ran",
         { TreeClean: false } => $"the {r.Kind} gate left the tree dirty",
         _ when r.Command != workflow.Command(r.Kind).Digest => $"the {r.Kind} gate ran a command other than the pinned workflow's",
         _ => null,

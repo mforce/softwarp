@@ -40,19 +40,20 @@ public sealed record RunManifest(RunId Run, CommitId Trunk, string Branch, strin
 
 public sealed record CommandSpec(string Executable, ImmutableArray<string> Arguments)
 {
-    /// <summary>Each target replaces a `{targets}` element as its own argv element.</summary>
-    public CommandSpec Expand(ImmutableArray<string> targets) =>
-        new(Executable, [.. Arguments.SelectMany(arg => arg == "{targets}" ? targets.AsEnumerable() : [arg])]);
-
     // Argv elements cannot contain NUL, so joining on it is unambiguous.
     public Digest Digest => new(Convert.ToHexStringLower(
         SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\0', Arguments.Prepend(Executable))))));
 }
 
+/// <summary>The report a test command writes into the gate's report directory, from which the gate runner counts the
+/// tests that ran.</summary>
+public enum TestReport { Trx, Junit }
+
 /// <summary>The gate commands from WORKFLOW.md at the pinned trunk commit. Commands run as argv, never through a
-/// shell: each approved test target replaces `{targets}` as its own argv element, and the gate runner must refuse a
-/// template that puts `{targets}` inside a shell `-c` script.</summary>
-public sealed record Workflow(CommandSpec Build, CommandSpec TargetedTests)
+/// shell, and WORKFLOW.md may not put `{targets}` inside a shell `-c` script.</summary>
+/// <param name="TargetsJoin">When set, every approved target is joined with it into the one argv element `{targets}`
+/// stands for; when null, each target becomes its own argv element.</param>
+public sealed record Workflow(CommandSpec Build, CommandSpec TargetedTests, TestReport TestReport, string? TargetsJoin)
 {
     public CommandSpec Command(GateKind kind) => kind switch
     {
@@ -60,10 +61,22 @@ public sealed record Workflow(CommandSpec Build, CommandSpec TargetedTests)
         GateKind.TargetedTests => TargetedTests,
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
+
+    /// <summary>The kind's command with the approved targets in place of `{targets}`.</summary>
+    public CommandSpec Expand(GateKind kind, ImmutableArray<string> targets)
+    {
+        var command = Command(kind);
+        IEnumerable<string> filled = TargetsJoin is { } join ? [string.Join(join, targets)] : targets;
+        return command with { Arguments = [.. command.Arguments.SelectMany(arg => arg == "{targets}" ? filled : [arg])] };
+    }
 }
 
 /// <summary>Observed by git in the run's worktree, never reported by an agent.</summary>
-public sealed record HeadObservation(string Branch, CommitId Head, bool Clean, bool DescendsFromTrunk);
+/// <param name="Dirt">Why the worktree differs from Head, naming a path; null when it does not.</param>
+public sealed record HeadObservation(string Branch, CommitId Head, string? Dirt, bool DescendsFromTrunk)
+{
+    public bool Clean => Dirt is null;
+}
 
 public sealed record Reproduction(CommitId Trunk, string Command, string Evidence);
 /// <summary>What the triage agent returns. The factory stamps it into a <see cref="TriageArtifact"/> at import.</summary>
@@ -115,6 +128,10 @@ public sealed record GateReceipt(GateKind Kind, Digest Spec, CommitId Head, Comm
     /// or when a gate run cut off by a crash had moved the head or dirtied the tree: no process exits with it, and the
     /// gate fails.</summary>
     public const int RefusedLog = -1;
+
+    /// <summary>The exit code the factory records when the gate runner stopped the gate at its timeout: no process exits
+    /// with it, and the gate fails.</summary>
+    public const int TimedOut = -2;
 
     /// <summary>A targeted-test run that executed no test fails.</summary>
     public GateVerdict Verdict => ExitCode switch
@@ -180,11 +197,12 @@ public sealed record SpecView(Digest Digest, Uri Issue, string Markdown, string 
 /// <param name="Unresolved">An operation whose intent was persisted with no receipt and no live worker.</param>
 /// <param name="Worker">A worker the spawn binding observed running.</param>
 /// <param name="SpecPostedAt">When the forge shows the spec comment for Spec's digest.</param>
+/// <param name="RejectedPushes">Every push the remote rejected, with the head and the epoch it was tried in.</param>
 public sealed record Evidence(RunManifest Manifest, RunId? Claim, OperationId? Unresolved, AgentHandle? Worker,
     ImmutableArray<MaintainerComment> Maintainer, ImmutableArray<Attempt> Attempts,
     TriageArtifact? Triage, SpecPackage? Spec, DateTimeOffset? SpecPostedAt,
     HeadObservation? Head, ImplementationArtifact? Implementation, ImmutableArray<GateReceipt> Gates,
-    CleanupArtifact? Cleanup, Publication? Pr);
+    CleanupArtifact? Cleanup, Publication? Pr, ImmutableArray<Intent.Push> RejectedPushes);
 
 public abstract record NextAction
 {

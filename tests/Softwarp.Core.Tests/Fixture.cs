@@ -6,7 +6,8 @@ static class Fixture
     public static readonly CommitId Head1 = new("head-1");
     public static readonly CommitId Head2 = new("head-2");
     public static readonly DateTimeOffset SpecPostedAt = new(2026, 10, 20, 12, 0, 0, TimeSpan.Zero);
-    public static readonly Workflow Workflow = new(new("dotnet", ["build"]), new("dotnet", ["test", "--filter", "{targets}"]));
+    public static readonly Workflow Workflow = new(new("dotnet", ["build"]), new("dotnet", ["test", "--filter", "{targets}"]),
+        TestReport.Trx, TargetsJoin: null);
     public static readonly ItemId Item = new("mforce", "cluckwork", 1223);
     public static readonly RunManifest Manifest = new(new RunId("cluckwork-1223"), Trunk, "feat/1223-cap", "maintainer-id", Workflow,
         new WorkItem(Item, "Cap legacy file growth", "Legacy files grow without limit.", "rev-1",
@@ -18,7 +19,7 @@ static class Fixture
 
     public static Evidence Claimed() => new(Manifest, Claim: Manifest.Run, Unresolved: null, Worker: null,
         Maintainer: [], Attempts: [], Triage: null, Spec: null, SpecPostedAt: null, Head: null, Implementation: null,
-        Gates: [], Cleanup: null, Pr: null);
+        Gates: [], Cleanup: null, Pr: null, RejectedPushes: []);
 
     public static Evidence Triaged() => Claimed() with
     {
@@ -33,7 +34,7 @@ static class Fixture
     public static Evidence Implemented() => Approved() with
     {
         Implementation = new(Package.Digest),
-        Head = new(Manifest.Branch, Head1, Clean: true, DescendsFromTrunk: true),
+        Head = new(Manifest.Branch, Head1, Dirt: null, DescendsFromTrunk: true),
     };
 
     public static Evidence GatesPassed() => Implemented() with

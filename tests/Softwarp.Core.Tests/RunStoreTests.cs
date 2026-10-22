@@ -123,12 +123,12 @@ public sealed class RunStoreTests : IDisposable
         using (var lease = Created())
         {
             lease.Complete(lease.Begin(new Intent.Claim()), new Outcome.Done());
-            op = lease.Begin(new Intent.Push(Head1));
+            op = lease.Begin(new Intent.Push(Head1, 0));
         } // the process dies here: no receipt
 
         var record = new RunStore(root.Path).Read(manifest.Run)!;
         Assert.Equal(op, record.Open!.Id);
-        Assert.Equal(new Intent.Push(Head1), record.Open.Intent);
+        Assert.Equal(new Intent.Push(Head1, 0), record.Open.Intent);
         Assert.Null(record.Open.Outcome);
     }
 
@@ -136,7 +136,7 @@ public sealed class RunStoreTests : IDisposable
     public void ReceiptCutOffBeforeTheRename_IsNoReceiptAndDoesNotBlockTheNext()
     {
         using var lease = Created();
-        var op = lease.Begin(new Intent.Push(Head1));
+        var op = lease.Begin(new Intent.Push(Head1, 0));
         File.WriteAllText(lease.OperationFile(op, "receipt.json.tmp"), """{"outcome": "do""");
         Assert.Equal(op, lease.Read().Open!.Id);
         lease.Complete(op, new Outcome.NotRun());
@@ -149,7 +149,7 @@ public sealed class RunStoreTests : IDisposable
         using var lease = Created();
         var victim = Path.Combine(root.Path, "victim.txt");
         File.WriteAllText(victim, "the maintainer's file");
-        var op = lease.Begin(new Intent.Push(Head1));
+        var op = lease.Begin(new Intent.Push(Head1, 0));
         File.CreateSymbolicLink(lease.OperationFile(op, "receipt.json.tmp"), victim);
 
         lease.Complete(op, new Outcome.Done());
@@ -182,7 +182,7 @@ public sealed class RunStoreTests : IDisposable
     public async Task RecordThatIsALinkAFifoOrOversized_IsRefusedNotFollowed(string record, string planted)
     {
         using var lease = Created();
-        var op = lease.Begin(new Intent.Push(Head1));
+        var op = lease.Begin(new Intent.Push(Head1, 0));
         lease.Complete(op, new Outcome.Done());
         var path = record == "manifest.json" ? Path.Combine(store.Directory(Item), record) : lease.OperationFile(op, record);
         var moved = Path.Combine(root.Path, record);
@@ -222,7 +222,7 @@ public sealed class RunStoreTests : IDisposable
     public void ReadingASmallRun_AllocatesFarLessThanTheRecordCap()
     {
         using var lease = Created();
-        for (var i = 0; i < 5; i++) lease.Complete(lease.Begin(new Intent.Push(Head1)), new Outcome.Done());
+        for (var i = 0; i < 5; i++) lease.Complete(lease.Begin(new Intent.Push(Head1, 0)), new Outcome.Done());
         lease.Read();
 
         var before = GC.GetAllocatedBytesForCurrentThread();
@@ -261,14 +261,14 @@ public sealed class RunStoreTests : IDisposable
         Directory.CreateDirectory(Path.Combine(store.Directory(Item), "ops", "0002-push"));
         File.WriteAllText(lease.OperationFile(new("0002-push"), "intent.json.tmp"), """{"effect": "pu""");
         Assert.Null(lease.Read().Open);
-        Assert.Equal("0003-push", lease.Begin(new Intent.Push(Head1)).Value);
+        Assert.Equal("0003-push", lease.Begin(new Intent.Push(Head1, 0)).Value);
     }
 
     [Fact]
     public void Receipt_IsWrittenOnce()
     {
         using var lease = Created();
-        var op = lease.Begin(new Intent.Push(Head1));
+        var op = lease.Begin(new Intent.Push(Head1, 0));
         lease.Complete(op, new Outcome.Done());
         Assert.Throws<IOException>(() => lease.Complete(op, new Outcome.NotRun()));
         Assert.IsType<Outcome.Done>(lease.Read().Operations.Single().Outcome);
@@ -283,7 +283,7 @@ public sealed class RunStoreTests : IDisposable
         {
             lease.Begin(new Intent.Claim()), lease.Begin(new Intent.Agent(ActionKind.Triage, 0, false, null)),
             lease.Begin(new Intent.PostSpec(Package.Digest)), lease.Begin(new Intent.Gates(Package.Digest, Head1, 0)),
-            lease.Begin(new Intent.Push(Head1)), lease.Begin(new Intent.OpenPr(Package.Digest, Head1)),
+            lease.Begin(new Intent.Push(Head1, 0)), lease.Begin(new Intent.OpenPr(Package.Digest, Head1)),
         };
         Assert.Equal(["0001-claim", "0002-triage", "0003-post-spec", "0004-gates", "0005-push", "0006-open-pr"],
             ids.Select(id => id.Value));
@@ -296,10 +296,10 @@ public sealed class RunStoreTests : IDisposable
         using var lease = Created();
         Directory.CreateDirectory(Path.Combine(store.Directory(Item), "ops", "9999-claim"));
         File.WriteAllText(lease.OperationFile(new("9999-claim"), "intent.json"), """{"effect": "claim"}""");
-        var next = lease.Begin(new Intent.Push(Head1));
+        var next = lease.Begin(new Intent.Push(Head1, 0));
         Assert.Equal("10000-push", next.Value);
         Assert.Equal(["9999-claim", "10000-push"], lease.Read().Operations.Select(o => o.Id.Value));
-        Assert.Equal("10001-push", lease.Begin(new Intent.Push(Head1)).Value);
+        Assert.Equal("10001-push", lease.Begin(new Intent.Push(Head1, 0)).Value);
     }
 
     [Fact]
@@ -307,7 +307,7 @@ public sealed class RunStoreTests : IDisposable
     {
         using (var lease = Created()) lease.Begin(new Intent.Claim());
         using var reopened = store.TryLock(Item)!;
-        Assert.Equal("0002-push", reopened.Begin(new Intent.Push(Head1)).Value);
+        Assert.Equal("0002-push", reopened.Begin(new Intent.Push(Head1, 0)).Value);
     }
 
     static TriageArtifact Triage(int epoch) => Triaged().Triage! with { Epoch = epoch };

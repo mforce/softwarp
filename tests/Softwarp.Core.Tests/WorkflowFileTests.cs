@@ -11,6 +11,7 @@ public class WorkflowFileTests
         ---
         {
           "branch": "feat/{issue}-{slug}",
+          "test_report": "trx",
           {{extra}}
           "commands": { {{commands}} }
         }
@@ -129,6 +130,33 @@ public class WorkflowFileTests
 
     [Fact]
     public void UnknownCommandKey_IsRejected() => Rejected(File(Commands + """, "deploy": ["./deploy.sh"]"""));
+
+    [Theory]
+    [InlineData("\"test_report\": \"trx\"", TestReport.Trx)]
+    [InlineData("\"test_report\": \"junit\"", TestReport.Junit)]
+    public void TestReport_IsParsed(string line, TestReport report) =>
+        Assert.Equal(report, WorkflowFile.Parse(File().Replace("\"test_report\": \"trx\"", line)).Workflow.TestReport);
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("\"test_report\": \"TRX\",")]
+    [InlineData("\"test_report\": \"xunit\",")]
+    public void MissingOrUnknownTestReport_IsRejected(string line) =>
+        Assert.Contains("test_report", Rejected(File().Replace("\"test_report\": \"trx\",", line)));
+
+    [Fact]
+    public void TargetsJoin_IsParsedAndAbsentMeansNone()
+    {
+        Assert.Null(WorkflowFile.Parse(File()).Workflow.TargetsJoin);
+        Assert.Equal("|", WorkflowFile.Parse(File(extra: "\"targets_join\": \"|\",")).Workflow.TargetsJoin);
+    }
+
+    [Theory]
+    [InlineData("\"targets_join\": \"\",")]
+    [InlineData("\"targets_join\": \"|\\n\",")]
+    [InlineData("\"targets_join\": \"\\u0000\",")]
+    public void EmptyOrControlCharacterTargetsJoin_IsRejected(string extra) =>
+        Assert.Contains("targets_join", Rejected(File(extra: extra)));
 
     [Theory]
     [InlineData("build")]
