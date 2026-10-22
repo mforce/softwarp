@@ -53,10 +53,21 @@ public sealed class FactoryTests : IDisposable
         Assert.Equal(Harness.WorkItem, manifest.Item);
         Assert.Equal(Harness.Trunk, manifest.Trunk);
         Assert.Equal("maintainer-id", manifest.MaintainerAccountId);
-        Assert.Equal("claude-sonnet-5-5", manifest.Models.Implement);
+        Assert.Equal(new AgentPin(Core.Harness.Claude, "claude-sonnet-5-5", "medium"), manifest.Agents.Implement);
         Assert.Equal(WorkflowFile.Parse(h.Git.WorkflowFile).Workflow.TargetedTests.Digest, manifest.Workflow.TargetedTests.Digest);
         Assert.Equal(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(h.Git.WorkflowFile))), manifest.WorkflowFile.Value);
+    }
+
+    [Fact]
+    public async Task AConfigChangeMidRun_CannotSwitchARolesHarnessModelOrEffort()
+    {
+        var run = await h.StartAsync();
+        var pin = new AgentPin(Core.Harness.Claude, "other-model", "max");
+        var changed = new Factory(h.Store, h.Tracker, h.Git, h.Spawn, h.Gates, "maintainer-id", new AgentPins(pin, pin, pin, pin), h.Clock);
+
+        await changed.AdvanceAsync(run, null, None);
+        Assert.Equal(new AgentPin(Core.Harness.Codex, "glm-5.3", "low"), Assert.Single(h.Spawn.Briefs).Agent);
     }
 
     [Fact]
@@ -657,19 +668,16 @@ public sealed class FactoryTests : IDisposable
         Assert.NotEmpty(record.Gates);
     }
 
+    /// <summary>The spawn binding refuses an output it cannot read safely (AgentSpawnTests pins which); the factory counts
+    /// that as an invalid attempt, not as a crash.</summary>
     [Fact]
-    public async Task OutputTheFactoryCannotOpen_IsAnInvalidAttempt()
+    public async Task OutputTheSpawnCannotRead_IsAnInvalidAttempt()
     {
         var run = await h.StartAsync();
-        h.Spawn.Work[ActionKind.Triage] = brief =>
-        {
-            File.WriteAllText(brief.OutputFile, "{}");
-            File.SetUnixFileMode(brief.OutputFile, UnixFileMode.None);
-            return null;
-        };
+        h.Spawn.Work[ActionKind.Triage] = _ => null;
 
         await h.AdvanceAsync(run);
-        Assert.Contains("could not be opened", Assert.Single(Assert.IsType<Outcome.Invalid>(h.Record(run).Operations[^1].Outcome).Errors));
+        Assert.Contains("gave no output", Assert.Single(Assert.IsType<Outcome.Invalid>(h.Record(run).Operations[^1].Outcome).Errors));
         await h.AdvanceAsync(run); // the one retry
         var stopped = await h.AdvanceAsync(run);
         Assert.Equal((ExitStatus.WaitingOnMaintainer, Rule.Triage), (stopped.Exit, stopped.Rule));
@@ -686,34 +694,15 @@ public sealed class FactoryTests : IDisposable
         Assert.InRange(error.Length, 1, 400);
     }
 
+    /// <summary>The factory holds every output to its own cap, whichever spawn binding gave it.</summary>
     [Fact]
-    public async Task OversizedOutput_IsInvalid()
+    public async Task OutputOverTheFactorysCap_IsInvalid_WhicheverSpawnGaveIt()
     {
         var run = await h.StartAsync();
         h.Spawn.Work[ActionKind.Triage] = _ => FakeSpawn.Json(new TriageOutput(TriageDecision.Agent,
             new Reproduction(Harness.Trunk, "dotnet test", new string('e', 2_000_000)), "none", "none"));
         await h.AdvanceAsync(run);
         Assert.Contains("bytes", Assert.Single(Assert.IsType<Outcome.Invalid>(h.Record(run).Operations[^1].Outcome).Errors));
-    }
-
-    [Theory]
-    [InlineData("/dev/zero")]
-    [InlineData("a valid triage outside the run")]
-    public async Task SymlinkedOutput_IsInvalidAndNeverFollowed(string target)
-    {
-        var run = await h.StartAsync();
-        var outside = Path.Combine(h.Root.Path, "triage.json");
-        File.WriteAllText(outside, FakeSpawn.Json(new TriageOutput(TriageDecision.Agent,
-            new Reproduction(Harness.Trunk, "dotnet test", "red"), "none", "none")));
-        h.Spawn.Work[ActionKind.Triage] = brief =>
-        {
-            File.CreateSymbolicLink(brief.OutputFile, target == "/dev/zero" ? target : outside);
-            return null;
-        };
-
-        await Task.Run(() => h.AdvanceAsync(run)).WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Null(h.Record(run).Newest<Outcome.Triaged>());
-        Assert.Contains("link", Assert.Single(Assert.IsType<Outcome.Invalid>(h.Record(run).Operations[^1].Outcome).Errors));
     }
 
     [Theory]
@@ -760,21 +749,6 @@ public sealed class FactoryTests : IDisposable
 
         await h.AdvanceUntilAsync(run, r => r.Pr is not null);
         Assert.Equal(("Cap legacy file growth", "Closes #1223."), (h.Tracker.Published!.Title, h.Tracker.Published.Body));
-    }
-
-    [Fact]
-    public async Task FifoOutput_IsInvalidWithoutBlocking()
-    {
-        var run = await h.StartAsync();
-        h.Spawn.Work[ActionKind.Triage] = brief =>
-        {
-            using var mkfifo = System.Diagnostics.Process.Start("mkfifo", brief.OutputFile);
-            mkfifo.WaitForExit();
-            return null;
-        };
-
-        await Task.Run(() => h.AdvanceAsync(run)).WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Contains("not a regular file", Assert.Single(Assert.IsType<Outcome.Invalid>(h.Record(run).Operations[^1].Outcome).Errors));
     }
 
     [Fact]
@@ -865,7 +839,8 @@ public sealed class FactoryTests : IDisposable
             .Where(file => !file.StartsWith(holdout) && texts.Any(File.ReadAllText(file).Contains))
             .Select(file => Path.GetRelativePath(dir, file));
         Assert.Equal([], leaks);
-        Assert.Equal(2, Directory.GetFiles(Path.Combine(dir, "holdout", "io"), "output.json", SearchOption.AllDirectories).Length);
+        // Both spec agents' logs quote their holdouts, and both lie under holdout/.
+        Assert.Equal(2, Directory.GetFiles(Path.Combine(dir, "holdout", "logs"), "*.log").Count(log => texts.Any(File.ReadAllText(log).Contains)));
     }
 
     [Fact]
@@ -899,15 +874,18 @@ public sealed class FactoryTests : IDisposable
         var brief = Assert.Single(h.Spawn.Briefs);
         var dir = h.Store.Directory(Harness.Item);
         var io = Path.Combine(dir, "io", "0002-triage");
-        Assert.Equal((ActionKind.Triage, "glm-5.3"), (brief.Role, brief.ModelId));
-        Assert.Equal((Path.Combine(io, "input.json"), Path.Combine(io, "schema.json"), Path.Combine(io, "output.json"), Path.Combine(io, "agent.log")),
+        Assert.Equal((ActionKind.Triage, new AgentPin(Core.Harness.Codex, "glm-5.3", "low")), (brief.Role, brief.Agent));
+        Assert.Equal((Path.Combine(io, "input.json"), Path.Combine(io, "schema.json"), Path.Combine(io, "output.json"), Path.Combine(dir, "logs", "0002-triage.log")),
             (brief.InputFile, brief.SchemaFile, brief.OutputFile, brief.LogFile));
         Assert.Equal(new TriageInput(Harness.WorkItem, Harness.Trunk), Input(brief, C.TriageInput));
         Assert.True(File.Exists(Path.Combine(dir, "ops", "0002-triage", "brief.json")));
         Assert.Equal(Contracts.Schema(Contracts.Default.TriageOutput).ToJsonString(),
             System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(brief.SchemaFile))!.ToJsonString());
         Assert.True(brief.ExpectedDuration > TimeSpan.Zero);
-        Assert.All([brief.InputFile, brief.SchemaFile, brief.OutputFile], file => Assert.Contains(file, brief.Prompt));
+        Assert.All([brief.InputFile, brief.SchemaFile], file => Assert.Contains(file, brief.Prompt));
+        Assert.DoesNotContain(brief.OutputFile, brief.Prompt);
+        Assert.True(Directory.Exists(Path.GetDirectoryName(brief.LogFile)));
+        Assert.Contains("CLAUDE.md and AGENTS.md", brief.Prompt);
     }
 
     [Fact]

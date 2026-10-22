@@ -112,6 +112,27 @@ public sealed class GateRunnerTests : GateFixture
         Assert.Equal(dotGitFiles, Directory.EnumerateFiles(Path.Combine(workspace.Path, ".git"), "*", SearchOption.AllDirectories).Order());
     }
 
+    /// <summary>softwarp's own reads of the implementer's repository (the clean check, upload-pack) must not change what
+    /// they read.</summary>
+    [Fact]
+    public async Task ReadOnlyMount_LetsNothingWriteTheWorktreeOrItsGit()
+    {
+        var output = new Captured("the read");
+        var exit = await new Sandbox(GateLimits.Default, GitRemote.Home).RunAsync(new Profile(workspace.Path, new WorktreeMount.ReadOnly(),
+            Bash("""
+                fail=0
+                try() { if "$@" >/dev/null 2>&1; then echo "ALLOWED $*"; fail=1; fi; }
+                try touch new.txt
+                try sh -c 'echo x >> WORKFLOW.md'
+                try sh -c 'echo forged > .git/HEAD'
+                try mkdir .git/refs/forged
+                try git update-ref refs/heads/forged HEAD
+                exit $fail
+                """)), output, TimeSpan.FromMinutes(1), None);
+
+        Assert.True(exit == 0, output.Result(exit, TimeSpan.FromMinutes(1)).Output);
+    }
+
     [Fact]
     public async Task Gate_HasNoNetworkSessionBusOrScopeEscape()
     {
@@ -166,8 +187,8 @@ public sealed class GateRunnerTests : GateFixture
         // The script plays the runner: systemd-run is its child, and it is then killed alone, with no chance to clean up.
         GitRemote.Script(runner, $"#!/bin/sh\necho $$ > {pid}\n/usr/bin/systemd-run \"$@\" &\nwait\n");
         var sandbox = new Sandbox(GateLimits.Default, GitRemote.Home, systemdRun: runner);
-        var run = sandbox.RunAsync(workspace.Path, reports, new CommandSpec("sleep", [marker]), new Captured("the sandbox"),
-            TimeSpan.FromMinutes(2), None);
+        var run = sandbox.RunAsync(new Profile(workspace.Path, new WorktreeMount.Gate(reports), new CommandSpec("sleep", [marker])),
+            new Captured("the sandbox"), TimeSpan.FromMinutes(2), None);
         for (var i = 0; i < 100 && !GitRemote.Alive(marker); i++) await Task.Delay(100);
         Assert.True(GitRemote.Alive(marker));
 
@@ -279,7 +300,8 @@ public sealed class GateRunnerTests : GateFixture
             sandbox.UploadPack(workspace.Path, TimeSpan.FromMinutes(1))).Message);
         Assert.Contains("will not bind it", Assert.Throws<InvalidOperationException>(() =>
         {
-            _ = sandbox.RunAsync(workspace.Path, null, new CommandSpec("true", []), new Captured("x"), TimeSpan.FromMinutes(1), None);
+            _ = sandbox.RunAsync(new Profile(workspace.Path, new WorktreeMount.ReadOnly(), new CommandSpec("true", [])), new Captured("x"),
+                TimeSpan.FromMinutes(1), None);
         }).Message);
         Assert.False(File.Exists(started));
     }

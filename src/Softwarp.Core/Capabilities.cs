@@ -52,8 +52,13 @@ public interface ISpawn
     Task<AgentHandle> EnsureAsync(RunManifest run, OperationId operation, Brief brief, Workspace workspace,
         CancellationToken ct);
     Task<AgentState> InspectAsync(RunManifest run, OperationId operation, CancellationToken ct);
-    /// <summary>Returns when the agent exits or at the deadline, whichever comes first.</summary>
-    Task<AgentState> WaitAsync(AgentHandle handle, DateTimeOffset deadline, CancellationToken ct);
+    /// <summary>Returns when the agent exits or at the deadline, whichever comes first: true when it exited.</summary>
+    Task<bool> WaitAsync(RunManifest run, OperationId operation, DateTimeOffset deadline, CancellationToken ct);
+    /// <summary>The output the agent's harness gave, read once the agent has exited, and never anything else the agent
+    /// wrote. It is as untrusted as the agent; the factory reads it through the role's contract.</summary>
+    /// <exception cref="InvalidDataException">There is none, or it is not a regular file, or it holds more than
+    /// <see cref="Factory.MaxOutputBytes"/>.</exception>
+    byte[] Output(RunManifest run, OperationId operation);
 }
 
 public abstract record AgentState
@@ -64,9 +69,11 @@ public abstract record AgentState
     public sealed record Exited : AgentState;
 }
 
-/// <summary>What an agent gets. The agent reads its role's input from InputFile and writes JSON matching SchemaFile to
-/// OutputFile. All four files sit in the agent's own directory.</summary>
-public sealed record Brief(ActionKind Role, string ModelId, string Prompt, string InputFile, string SchemaFile,
+/// <summary>What an agent gets. The agent reads its role's input from InputFile and gives JSON matching SchemaFile as its
+/// final answer; a harness that writes that answer to a file writes OutputFile. Those three sit in the agent's own
+/// directory; LogFile sits beside it, where the agent cannot reach its path.</summary>
+/// <param name="Agent">The role's harness, model and effort, as the run pinned them.</param>
+public sealed record Brief(ActionKind Role, AgentPin Agent, string Prompt, string InputFile, string SchemaFile,
     string OutputFile, string LogFile, TimeSpan ExpectedDuration);
 
 public interface IGates

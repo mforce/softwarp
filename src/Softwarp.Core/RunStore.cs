@@ -117,7 +117,7 @@ public sealed record RunRecord(string Directory, RunManifest Manifest, Immutable
 /// `spec/`; and the holdouts under `holdout/`, with the spec agent's own directories under `holdout/io/`.</summary>
 public sealed class RunStore(string root)
 {
-    internal const string ManifestFile = "manifest.json", IntentFile = "intent.json", ReceiptFile = "receipt.json";
+    internal const string ManifestFile = "manifest.json", IntentFile = "intent.json", ReceiptFile = "receipt.json", BriefFile = "brief.json";
 
     /// <summary>A record holds at most one agent output, and the encoder may write each of its bytes as a six-byte
     /// `\uXXXX` escape.</summary>
@@ -168,8 +168,20 @@ public sealed class RunStore(string root)
             ? record
             : null;
 
+    /// <summary>A file in the operation's directory, among the factory's own records, which no agent is handed.</summary>
+    /// <exception cref="ArgumentException">The item's owner or repository is not a single safe path segment.</exception>
+    public string OperationFile(ItemId item, OperationId operation, string name) => OperationFile(Directory(item), operation, name);
+
+    /// <summary>The brief the factory wrote for the agent operation.</summary>
+    /// <exception cref="InvalidDataException">There is no brief, or it is not one.</exception>
+    public Brief Brief(ItemId item, OperationId operation) =>
+        Contracts.Read(ReadRecord(OperationFile(item, operation, BriefFile)), Contracts.Default.Brief);
+
+    internal static string OperationFile(string runDirectory, OperationId operation, string name) =>
+        Path.Combine(runDirectory, "ops", operation.Value, name);
+
     internal static string GatePackages(string runDirectory, OperationId operation, GateKind kind) =>
-        Path.Combine(runDirectory, "ops", operation.Value, $"{kind}.packages");
+        OperationFile(runDirectory, operation, $"{kind}.packages");
 
     /// <summary>The packages a gate runner recorded in the file, one per line; none when it wrote nothing.</summary>
     internal static IEnumerable<string> Packages(string file) =>
@@ -269,7 +281,7 @@ public sealed class RunLease : IDisposable
         RunStore.WriteAtomic(OperationFile(operation, RunStore.ReceiptFile), outcome, Contracts.Default.Outcome, overwrite: false);
 
     /// <summary>A file inside the operation's directory, among the factory's own records.</summary>
-    public string OperationFile(OperationId operation, string name) => Path.Combine(Ops, operation.Value, name);
+    public string OperationFile(OperationId operation, string name) => RunStore.OperationFile(Directory, operation, name);
 
     /// <summary>Where a gate's output goes, among the factory's own records.</summary>
     public string GateLog(OperationId operation, GateKind kind) => OperationFile(operation, $"{kind}.log");
@@ -277,11 +289,16 @@ public sealed class RunLease : IDisposable
     /// <summary>Where a gate runner records the packages from outside the pinned trunk it lets in.</summary>
     public string GatePackages(OperationId operation, GateKind kind) => RunStore.GatePackages(Directory, operation, kind);
 
-    /// <summary>The agent's own directory, the one part of the run its sandbox may grant: the agent's input, schema,
-    /// output and log, and nothing the factory trusts. The spec agent writes holdouts, so its directory sits under
-    /// `holdout/`, which no other role may read.</summary>
-    public string AgentDirectory(OperationId operation, ActionKind role) =>
-        Path.Combine(Directory, role == ActionKind.Spec ? "holdout" : "", "io", operation.Value);
+    /// <summary>The agent's own directory, the one part of the run its sandbox may grant: the agent's input, schema and
+    /// output, and nothing the factory trusts. The spec agent writes holdouts, so its directory sits under `holdout/`,
+    /// which no other role may read.</summary>
+    public string AgentDirectory(OperationId operation, ActionKind role) => Path.Combine(AgentRoot(role), "io", operation.Value);
+
+    /// <summary>The agent's log, beside its directory and outside its sandbox, so the agent cannot swap it for a link the
+    /// watch command would follow. Under `holdout/` for the spec agent, whose log may quote holdouts.</summary>
+    public string AgentLog(OperationId operation, ActionKind role) => Path.Combine(AgentRoot(role), "logs", $"{operation.Value}.log");
+
+    string AgentRoot(ActionKind role) => role == ActionKind.Spec ? Path.Combine(Directory, "holdout") : Directory;
 
     /// <summary>Stores the spec's public part under `spec/` and its holdouts under `holdout/`. The digest covers the
     /// public spec, the tickets, the holdouts and the manifest.</summary>

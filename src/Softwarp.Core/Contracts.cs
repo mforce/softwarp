@@ -50,13 +50,28 @@ public sealed partial class Contracts : JsonSerializerContext
         return JsonSerializer.Deserialize(json, contract) ?? throw new JsonException("the payload is null");
     }
 
+    /// <summary>The schema the role's output must match.</summary>
+    public static JsonNode OutputSchema(Core.ActionKind role) => role switch
+    {
+        Core.ActionKind.Triage => Schema(Default.TriageOutput),
+        Core.ActionKind.Spec => Schema(Default.SpecArtifact),
+        Core.ActionKind.Implement => Schema(Default.ImplementationOutput),
+        Core.ActionKind.Cleanup => Schema(Default.CleanupOutput),
+        _ => throw new ArgumentOutOfRangeException(nameof(role)),
+    };
+
     /// <summary>The JSON schema an agent's output must match, from the same metadata <see cref="Read{T}"/> enforces.</summary>
     public static JsonNode Schema<T>(JsonTypeInfo<T> contract) => JsonSchemaExporter.GetJsonSchemaAsNode(contract,
         new JsonSchemaExporterOptions
         {
             TreatNullObliviousAsNonNullable = true,
             TransformSchemaNode = (context, schema) =>
-                StringValueJson.Types.Contains(context.TypeInfo.Type) ? new JsonObject { ["type"] = "string" } : schema,
+            {
+                if (StringValueJson.Types.Contains(context.TypeInfo.Type)) return new JsonObject { ["type"] = "string" };
+                // Codex refuses an object schema without `properties`, and an empty record's schema has none.
+                if (context.TypeInfo.Kind == JsonTypeInfoKind.Object && schema is JsonObject members) members.TryAdd("properties", new JsonObject());
+                return schema;
+            },
         });
 
     // Nullable annotations on generic arguments are not enforced, so `["a", null]` would reach validation as a null
@@ -99,6 +114,9 @@ public static class StringValueJson
 
     internal static readonly HashSet<Type> Types = [typeof(RunId), typeof(Digest), typeof(CommitId)];
 }
+
+/// <summary>Harnesses by their lowercase name, as the machine config writes them; an integer is rejected.</summary>
+public sealed class HarnessJson() : JsonStringEnumConverter<Harness>(JsonNamingPolicy.SnakeCaseLower, allowIntegerValues: false);
 
 /// <summary>Enum members by name only: an integer, even a defined one, is rejected.</summary>
 public sealed class StrictEnumJson<T>() : JsonStringEnumConverter<T>(namingPolicy: null, allowIntegerValues: false)

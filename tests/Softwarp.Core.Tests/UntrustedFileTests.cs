@@ -160,4 +160,14 @@ public sealed class UntrustedFileTests : IDisposable
     [Fact]
     public void ShortLog_IsTailedWhole() =>
         Assert.Equal("exit 1\n", UntrustedFile.Tail(Write("Build.log", "exit 1\n"u8.ToArray()), 4096));
+
+    [Theory]
+    [InlineData("plain text, ünïcode and emoji 🙂", false, "plain text, ünïcode and emoji 🙂")]
+    [InlineData("a\nb\tc\rd\u001be\u007ff\u0085g", false, "a\\u000ab\\u0009c\\u000dd\\u001be\\u007ff\\u0085g")]
+    [InlineData("a\nb\tc", true, "a\nb\\u0009c")]
+    [InlineData("\u202a\u202e\u2066\u2069\u200b\u200d\ufeff\u2028\u2029", false,
+        "\\u202a\\u202e\\u2066\\u2069\\u200b\\u200d\\ufeff\\u2028\\u2029")]
+    [InlineData("tag \U000E0041\U000E007F", false, "tag \\U000e0041\\U000e007f")]
+    public void UntrustedText_ShowsEveryControlFormatAndSeparatorCharacterAsText(string text, bool keepNewlines, string shown) =>
+        Assert.Equal(shown, Untrusted.Printable(text, keepNewlines));
 }

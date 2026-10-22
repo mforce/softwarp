@@ -32,13 +32,14 @@ static class Tool
     ];
 
     /// <summary>Runs a trusted tool to its end and returns what it printed.</summary>
+    /// <param name="environment">Its whole environment; <see cref="Trusted"/> when null.</param>
     /// <exception cref="InvalidOperationException">It ran past the timeout or wrote more than
     /// <see cref="MaxOutputBytes"/> to one stream, and was stopped.</exception>
     public static async Task<ToolResult> ReadAsync(string executable, IEnumerable<string> arguments, TimeSpan timeout,
-        CancellationToken ct, string? directory = null)
+        CancellationToken ct, string? directory = null, IEnumerable<(string Name, string Value)>? environment = null)
     {
         var output = new Captured(Path.GetFileName(executable));
-        return output.Result(await RunAsync(executable, arguments, Trusted, output, timeout, ct, directory), timeout);
+        return output.Result(await RunAsync(executable, arguments, environment ?? Trusted, output, timeout, ct, directory), timeout);
     }
 
     /// <summary>Runs the child to its end and returns its exit code, or null when it ran past the timeout and was killed

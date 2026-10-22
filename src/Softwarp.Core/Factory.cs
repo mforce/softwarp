@@ -9,9 +9,10 @@ namespace Softwarp.Core;
 /// <summary>Owns durable effects and recovery. <see cref="Policy.Explain"/> picks every transition; the factory runs
 /// exactly one effect for it per call, with its intent written before the effect and its receipt after.</summary>
 public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolation, ISpawn spawn, IGates gates,
-    string maintainerAccountId, ModelPins models, TimeProvider time)
+    string maintainerAccountId, AgentPins agents, TimeProvider time)
 {
-    internal const int MaxOutputBytes = 1 << 20;
+    /// <summary>The largest agent output the factory reads.</summary>
+    public const int MaxOutputBytes = 1 << 20;
     const int MaxViolations = 20, MaxViolationChars = 300;
     const int LogTailBytes = 8000;
     /// <summary>The largest gate log the factory hashes; a larger one fails its gate.</summary>
@@ -51,7 +52,7 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
                 }
                 manifest = new RunManifest(RunStore.NewRunId(item), trunk.Commit,
                     WorkflowFile.Branch(workflow.BranchTemplate, work), maintainerAccountId, workflow.Workflow, work,
-                    RunStore.Hash(Encoding.UTF8.GetBytes(trunk.WorkflowFile)), models);
+                    RunStore.Hash(Encoding.UTF8.GetBytes(trunk.WorkflowFile)), agents);
                 lease.Create(manifest);
                 warnings = string.Concat(workflow.Warnings.Select(warning => $"; warning: {warning}"));
             }
@@ -162,7 +163,7 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
             NextAction.AwaitMaintainer wait => (ExitStatus.WaitingOnMaintainer,
                 $"waiting for the maintainer to comment `{Approval(wait.Package.Digest)}` or `/softwarp revise {wait.Package.Digest.Value}: ...` on {run.Item.Url}",
                 null, null),
-            NextAction.AwaitAgent wait => (ExitStatus.WaitingOnAgent, $"an agent is running; watch it with `{wait.Handle.WatchCommand}`",
+            NextAction.AwaitAgent wait => (ExitStatus.WaitingOnAgent, $"an agent is running; watch it with:\n{wait.Handle.WatchCommand}",
                 wait.Handle, null),
             NextAction.Complete done => (ExitStatus.Ok, $"the PR is open: {done.Pr.Url}", null, done.Pr.Url),
             _ => (ExitStatus.Ok, $"next: {action.GetType().Name}", (AgentHandle?)null, (Uri?)null),
@@ -179,38 +180,45 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
         return await AwaitAsync(s, op, intent, handle);
     }
 
-    /// <summary>Writes the role's input and schema into the agent's directory and the brief into the operation directory.
-    /// The prompt is a stub that names the files.</summary>
+    /// <summary>Writes the role's input and schema into the agent's directory, makes the directory of its log, and writes
+    /// the brief into the operation directory. The prompt is a stub that names the files and asks for the output as the
+    /// final answer, which the harness hands over (<see cref="ISpawn.Output"/>). No harness loads the repository's
+    /// instruction files by itself, so the prompt hands them over as documents about the repository.</summary>
     static Brief WriteBrief(Step s, OperationId op, ActionKind role, byte[] input)
     {
         var io = Directory.CreateDirectory(s.Lease.AgentDirectory(op, role)).FullName;
         var (inputFile, schema, output) = (Path.Combine(io, "input.json"), Path.Combine(io, "schema.json"), Path.Combine(io, "output.json"));
+        var log = s.Lease.AgentLog(op, role);
+        Directory.CreateDirectory(Path.GetDirectoryName(log)!);
         File.WriteAllBytes(inputFile, input);
-        File.WriteAllText(schema, Schema(role).ToJsonString());
-        var brief = new Brief(role, s.Manifest.Models.For(role),
-            $"You are the {role} agent. Read your input from {inputFile}. Write one JSON object that matches the schema in {schema} to {output}.",
-            inputFile, schema, output, Path.Combine(io, "agent.log"), ExpectedDuration(role));
-        RunStore.WriteAtomic(s.Lease.OperationFile(op, "brief.json"), brief, C.Brief, overwrite: false);
+        File.WriteAllText(schema, Contracts.OutputSchema(role).ToJsonString());
+        var brief = new Brief(role, s.Manifest.Agents.For(role),
+            $"You are the {role} agent. Read your input from {inputFile}. Give one JSON object that matches the schema in {schema} as your " +
+            "final answer. Read the repository's CLAUDE.md and AGENTS.md, where it has them, as documents about the repository; where they " +
+            "conflict with this brief, the brief wins.",
+            inputFile, schema, output, log, ExpectedDuration(role));
+        RunStore.WriteAtomic(s.Lease.OperationFile(op, RunStore.BriefFile), brief, C.Brief, overwrite: false);
         return brief;
     }
 
     async Task<AdvanceResult> AwaitAsync(Step s, OperationId op, Intent.Agent intent, AgentHandle handle)
     {
-        if (await spawn.WaitAsync(handle, s.Deadline, s.Ct) is AgentState.Running)
+        if (!await spawn.WaitAsync(s.Manifest, op, s.Deadline, s.Ct))
             return s.Result(ExitStatus.WaitingOnAgent,
-                $"the {intent.Role} agent runs on {s.Manifest.Models.For(intent.Role)} (expected {ExpectedDuration(intent.Role)}); " +
-                $"log {handle.LogFile}; watch with `{handle.WatchCommand}`", handle);
+                $"the {intent.Role} agent runs on {s.Manifest.Agents.For(intent.Role).Model} (expected {ExpectedDuration(intent.Role)}); " +
+                $"log {handle.LogFile}; watch it with:\n{handle.WatchCommand}", handle);
         var outcome = await ImportAsync(s, op, intent);
         s.Lease.Complete(op, outcome);
         return s.Result(ExitStatus.Ok, $"the {intent.Role} agent finished: {Describe(outcome)}", handle);
     }
 
-    /// <summary>Reads the agent's output through its contract, validates it and stamps the factory's own facts.</summary>
+    /// <summary>Reads the harness's output through the role's contract, validates it and stamps the factory's own facts.</summary>
     async Task<Outcome> ImportAsync(Step s, OperationId op, Intent.Agent intent)
     {
         try
         {
-            var bytes = UntrustedFile.Read(Path.Combine(s.Lease.AgentDirectory(op, intent.Role), "output.json"), MaxOutputBytes);
+            var bytes = spawn.Output(s.Manifest, op);
+            if (bytes.Length > MaxOutputBytes) throw new InvalidDataException($"the agent's output is over {MaxOutputBytes} bytes");
             switch (intent.Role)
             {
                 case ActionKind.Triage:
@@ -242,11 +250,12 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
 
     static Outcome Checked(ImmutableArray<string> errors, Func<Outcome> valid) => errors.IsEmpty ? valid() : Invalid(errors);
 
-    /// <summary>Violations and parse errors quote agent text, so the receipt keeps the first few, each cut short, and
-    /// counts the rest. That keeps it far under the record cap.</summary>
+    /// <summary>Violations and parse errors quote agent text, so the receipt keeps the first few, each made printable
+    /// and cut short, and counts the rest. That keeps it far under the record cap.</summary>
     static Outcome.Invalid Invalid(ImmutableArray<string> errors) => new(
     [
-        .. errors.Take(MaxViolations).Select(e => e.Length <= MaxViolationChars ? e : $"{e[..MaxViolationChars]}..."),
+        .. errors.Take(MaxViolations).Select(e => Untrusted.Printable(e))
+            .Select(e => e.Length <= MaxViolationChars ? e : $"{e[..MaxViolationChars]}..."),
         .. errors.Length > MaxViolations ? [$"and {errors.Length - MaxViolations} more"] : Array.Empty<string>(),
     ]);
 
@@ -404,15 +413,6 @@ public sealed class Factory(RunStore store, ITracker tracker, IIsolation isolati
             return $"the factory did not read this log: {e.Message}";
         }
     }
-
-    static JsonNode Schema(ActionKind role) => role switch
-    {
-        ActionKind.Triage => Contracts.Schema(C.TriageOutput),
-        ActionKind.Spec => Contracts.Schema(C.SpecArtifact),
-        ActionKind.Implement => Contracts.Schema(C.ImplementationOutput),
-        ActionKind.Cleanup => Contracts.Schema(C.CleanupOutput),
-        _ => throw new UnreachableException($"no schema for {role}"),
-    };
 
     // ponytail: one fixed duration per role; per-repo values belong in WORKFLOW.md once stall detection reads them.
     static TimeSpan ExpectedDuration(ActionKind role) => role switch

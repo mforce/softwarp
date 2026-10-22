@@ -99,7 +99,7 @@ public static class Policy
             return (Rule.Publish, e.RejectedPushes.Any(p => p.Head == head && p.Epoch == epoch)
                 ? Stop($"the remote rejected the push of {head.Value} to {run.Branch}; its branch may hold commits the head lacks")
                 : new NextAction.Publish(approved, head, cleanup));
-        if (pr.Branch != run.Branch) return (Rule.Publish, Stop($"the PR is on {pr.Branch}, not the run branch {run.Branch}"));
+        if (pr.Branch != run.Branch) return (Rule.Publish, Stop($"the PR is on {Untrusted.Printable(pr.Branch)}, not the run branch {run.Branch}"));
         if (pr.Spec != package.Digest) return (Rule.Publish, Stop("the PR was published for another spec package"));
         if (pr.Head != head) return (Rule.Publish, Stop("the PR head differs from the run head"));
         return (Rule.Complete, new NextAction.Complete(pr));
@@ -128,9 +128,9 @@ public static class Policy
     static string? HeadProblem(Evidence e) => e.Head switch
     {
         null => e.Implementation is null ? null : "the run has an implementation but no worktree head",
-        { Dirt: { } dirt } => $"the worktree has uncommitted changes: {dirt}",
+        { Dirt: { } dirt } => $"the worktree has uncommitted changes: {Untrusted.Printable(dirt)}",
         { DescendsFromTrunk: false } => "the head does not descend from the pinned trunk",
-        var head when head.Branch != e.Manifest.Branch => $"the worktree is on {head.Branch}, not {e.Manifest.Branch}",
+        var head when head.Branch != e.Manifest.Branch => $"the worktree is on {Untrusted.Printable(head.Branch)}, not {e.Manifest.Branch}",
         _ => null,
     };
 

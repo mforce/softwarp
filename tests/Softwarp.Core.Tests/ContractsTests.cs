@@ -146,6 +146,25 @@ public class ContractsTests
         });
     }
 
+    /// <summary>Codex refuses an object schema without `properties`, so the empty implementer output would never reach it.</summary>
+    [Fact]
+    public void EveryObjectInAnAgentSchema_ListsItsProperties_EvenWhenItHasNone()
+    {
+        static IEnumerable<JsonObject> Objects(JsonNode? node) => node switch
+        {
+            JsonObject o => (o["type"]?.ToJsonString() ?? "").Contains("\"object\"")
+                ? o.SelectMany(p => Objects(p.Value)).Prepend(o)
+                : o.SelectMany(p => Objects(p.Value)),
+            JsonArray a => a.SelectMany(Objects),
+            _ => [],
+        };
+        JsonNode[] schemas = [Contracts.Schema(C.TriageOutput), Contracts.Schema(C.SpecArtifact),
+            Contracts.Schema(C.ImplementationOutput), Contracts.Schema(C.CleanupOutput)];
+
+        Assert.All(schemas.SelectMany(Objects), o => Assert.IsType<JsonObject>(o["properties"]));
+        Assert.Empty(Contracts.Schema(C.ImplementationOutput)["properties"]!.AsObject());
+    }
+
     [Fact]
     public void TriageSchema_RequiresEveryMemberAndNamesTheDecisions()
     {

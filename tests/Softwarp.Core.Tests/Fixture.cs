@@ -12,7 +12,8 @@ static class Fixture
     public static readonly RunManifest Manifest = new(new RunId("cluckwork-1223"), Trunk, "feat/1223-cap", "maintainer-id", Workflow,
         new WorkItem(Item, "Cap legacy file growth", "Legacy files grow without limit.", "rev-1",
             new Uri("https://github.com/mforce/cluckwork/issues/1223")),
-        new Digest("workflow-digest"), new ModelPins("triage-model", "spec-model", "implement-model", "cleanup-model"));
+        new Digest("workflow-digest"), new AgentPins(new(Core.Harness.Claude, "triage-model", "low"), new(Core.Harness.Claude, "spec-model", "high"),
+            new(Core.Harness.Claude, "implement-model", "medium"), new(Core.Harness.Claude, "cleanup-model", "low")));
     public static readonly SpecPackage Package = Spec("digest-1");
     public static readonly SpecPackage Package2 = Spec("digest-2");
     public static readonly AgentHandle Worker = new("agent-1", "/tmp/agent-1.log", "tail -f /tmp/agent-1.log");

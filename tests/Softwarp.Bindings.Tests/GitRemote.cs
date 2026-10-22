@@ -64,7 +64,8 @@ sealed class GitRemote : IDisposable
         $"feat/{(item ?? Item).Number}-widget", "maintainer-id",
         new Core.Workflow(new("dotnet", ["build"]), new("dotnet", ["test", "--filter", "{targets}"]), TestReport.Trx, null),
         new WorkItem(item ?? Item, "Widget", "Make the widget.", "rev-1", new Uri("https://github.com/mforce/widget/issues/7")),
-        new Digest("workflow-digest"), new ModelPins("t", "s", "i", "c"));
+        new Digest("workflow-digest"), new AgentPins(new(Harness.Claude, "t", "low"), new(Harness.Claude, "s", "low"),
+            new(Harness.Claude, "i", "low"), new(Harness.Claude, "c", "low")));
 
     public static string Git(string directory, params string[] arguments)
     {

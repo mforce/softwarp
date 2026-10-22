@@ -75,7 +75,7 @@ public static class Cli
         }
         catch (InvalidOperationException e)
         {
-            await stderr.WriteLineAsync($"softwarp: {e.Message}");
+            await stderr.WriteLineAsync($"softwarp: {Printable(e.Message)}");
             return (int)ExitStatus.InvalidInput;
         }
         try
@@ -88,12 +88,12 @@ public static class Cli
                 Command.Status status => await factory.StatusAsync(status.Run, ct),
                 _ => throw new System.Diagnostics.UnreachableException($"no handler for {invocation.Command}"),
             };
-            await stdout.WriteLineAsync(invocation.Json ? JsonSerializer.Serialize(result, CliJson.Default.AdvanceResult) : result.Message);
+            await stdout.WriteLineAsync(invocation.Json ? JsonSerializer.Serialize(result, CliJson.Default.AdvanceResult) : Printable(result.Message));
             return (int)result.Exit;
         }
         catch (Exception e)
         {
-            await stderr.WriteLineAsync($"softwarp: {e.GetType().Name}: {e.Message}");
+            await stderr.WriteLineAsync($"softwarp: {e.GetType().Name}: {Printable(e.Message)}");
             return Unexpected;
         }
     }
@@ -102,12 +102,17 @@ public static class Cli
     {
         if (factory.Spec(run) is not { } view)
         {
-            await stderr.WriteLineAsync($"softwarp: run {run.Value} has no spec package");
+            await stderr.WriteLineAsync($"softwarp: run {Untrusted.Printable(run.Value)} has no spec package");
             return (int)ExitStatus.InvalidInput;
         }
-        await stdout.WriteLineAsync(json ? JsonSerializer.Serialize(view, CliJson.Default.SpecView) : view.Markdown);
+        await stdout.WriteLineAsync(json ? JsonSerializer.Serialize(view, CliJson.Default.SpecView) : Printable(view.Markdown));
         return (int)ExitStatus.Ok;
     }
+
+    /// <summary>The last guard before the maintainer's terminal. The factory makes each agent-, gate- or forge-written
+    /// value printable where it quotes it; this keeps the factory's own line breaks and shows every other control, format
+    /// or separator character as text. JSON output escapes them already.</summary>
+    static string Printable(string text) => Untrusted.Printable(text, keepNewlines: true);
 
     /// <summary>`90s`, `5m` or `1h`.</summary>
     static TimeSpan? Duration(string text) =>

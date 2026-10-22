@@ -126,6 +126,8 @@ sealed class FakeSpawn(FakeIsolation git, CommitId trunk, FakeClock clock) : ISp
     sealed record Agent(Brief Brief, AgentHandle Handle)
     {
         public bool Exited { get; set; }
+        /// <summary>What the harness gave when the agent finished; null when it gave nothing.</summary>
+        public byte[]? Output { get; set; }
     }
 
     readonly Dictionary<OperationId, Agent> agents = [];
@@ -191,22 +193,29 @@ sealed class FakeSpawn(FakeIsolation git, CommitId trunk, FakeClock clock) : ISp
         Task.FromResult<AgentState>(!agents.TryGetValue(operation, out var agent) ? new AgentState.NotLaunched()
             : agent.Exited ? new AgentState.Exited() : new AgentState.Running(agent.Handle));
 
-    public async Task<AgentState> WaitAsync(AgentHandle handle, DateTimeOffset deadline, CancellationToken ct)
+    /// <summary>What the role's Work returned, as the harness's output; the binding's own reading of untrusted files is
+    /// AgentSpawnTests' to pin.</summary>
+    public byte[] Output(RunManifest run, OperationId operation) =>
+        agents.TryGetValue(operation, out var agent) && agent.Output is { } output
+            ? output
+            : throw new InvalidDataException($"the harness gave no output for {operation.Value}");
+
+    public async Task<bool> WaitAsync(RunManifest run, OperationId operation, DateTimeOffset deadline, CancellationToken ct)
     {
-        var agent = agents.Values.Single(a => a.Handle == handle);
+        var agent = agents[operation];
         if (Hold is { } hold)
         {
             Holding.TrySetResult();
             await hold.Task.WaitAsync(ct);
         }
-        else if (!FinishOnWait || deadline <= clock.Now) return new AgentState.Running(handle);
+        else if (!FinishOnWait || deadline <= clock.Now) return false;
         Finish(agent);
         if (CrashAfterExit == agent.Brief.Role)
         {
             CrashAfterExit = null;
             throw new SimulatedCrash();
         }
-        return new AgentState.Exited();
+        return true;
     }
 
     void Finish(Agent agent)
@@ -214,7 +223,7 @@ sealed class FakeSpawn(FakeIsolation git, CommitId trunk, FakeClock clock) : ISp
         if (agent.Exited) return;
         if (Work[agent.Brief.Role](agent.Brief) is { } output)
         {
-            File.WriteAllText(agent.Brief.OutputFile, output);
+            agent.Output = System.Text.Encoding.UTF8.GetBytes(output);
             File.WriteAllText(agent.Brief.LogFile, output); // a real agent's log quotes what it wrote
         }
         agent.Exited = true;
@@ -287,7 +296,8 @@ sealed class Harness : IDisposable
         Spawn = new FakeSpawn(Git, Trunk, Clock);
         Store = new RunStore(Root.Path);
         Factory = new Factory(Store, Tracker, Git, Spawn, Gates, "maintainer-id",
-            new ModelPins("glm-5.3", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5"), Clock);
+            new AgentPins(new(Core.Harness.Codex, "glm-5.3", "low"), new(Core.Harness.Claude, "claude-opus-5-5", "high"),
+                new(Core.Harness.Claude, "claude-sonnet-5-5", "medium"), new(Core.Harness.Claude, "claude-haiku-5", "low")), Clock);
     }
 
     public void Dispose() => Root.Dispose();

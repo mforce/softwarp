@@ -55,7 +55,8 @@ public sealed class GitIsolation(string slices, Func<ItemId, string> remote, San
 
     /// <summary>Makes the implementer's repository from the trusted clone, on the run branch at the pinned trunk or, when
     /// the branch was imported before, at that branch. It is built beside its final path and moved in, so a crash leaves
-    /// no half-made repository.</summary>
+    /// no half-made repository, and a failed build is removed. The checkout writes a tree the implementer may have
+    /// written, so it runs in the sandbox, where a path in that tree can reach nothing outside the new repository.</summary>
     public async Task<Workspace> EnsureAsync(RunManifest run, CancellationToken ct)
     {
         var (item, worktree) = (run.Item.Id, Worktree(run.Item.Id));
@@ -63,12 +64,24 @@ public sealed class GitIsolation(string slices, Func<ItemId, string> remote, San
         var trusted = await TrustedAsync(item, ct);
         var imported = (await TryGit(ct, "-C", trusted, "rev-parse", "--verify", "--quiet", BranchRef(run))).ExitCode == 0;
         var building = $"{worktree}.{RandomNumberGenerator.GetHexString(8, lowercase: true)}";
-        await Git(ct, "-c", "init.defaultBranch=softwarp-unborn", "init", "--quiet", building);
-        await Local(ct, "-C", building, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", trusted,
-            $"{(imported ? BranchRef(run) : TrunkRef(item))}:{BranchRef(run)}");
-        await Git(ct, "-C", building, "checkout", "--quiet", "-B", run.Branch, imported ? BranchRef(run) : run.Trunk.Value);
-        Directory.Move(building, worktree);
-        return new Workspace(worktree);
+        try
+        {
+            await Git(ct, "-c", "init.defaultBranch=softwarp-unborn", "init", "--quiet", building);
+            await Local(ct, "-C", building, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", trusted,
+                $"{(imported ? BranchRef(run) : TrunkRef(item))}:{BranchRef(run)}");
+            var output = new Captured("the checkout");
+            var checkout = output.Result(await sandbox.RunAsync(new Profile(building, new WorktreeMount.Writable(),
+                new CommandSpec("git", [.. Hardened, "checkout", "--quiet", "-B", run.Branch, imported ? BranchRef(run) : run.Trunk.Value]),
+                Environment: [("GIT_CONFIG_NOSYSTEM", "1"), ("GIT_NO_REPLACE_OBJECTS", "1")]), output, timeout, ct), timeout);
+            if (checkout.ExitCode != 0) throw Failed(checkout, $"checkout in {building}");
+            Directory.Move(building, worktree);
+            return new Workspace(worktree);
+        }
+        catch
+        {
+            if (Directory.Exists(building)) Directory.Delete(building, recursive: true);
+            throw;
+        }
     }
 
     /// <summary>Imports the implementer's HEAD into the trusted clone, so branch, head and ancestry come from the trusted
@@ -94,11 +107,12 @@ public sealed class GitIsolation(string slices, Func<ItemId, string> remote, San
 
         var objects = Path.Combine(trusted, "objects");
         var output = new Captured("the clean check");
-        var check = output.Result(await sandbox.RunAsync(worktree, null,
-            new CommandSpec("sh", ["-c", CleanScript, "clean", head, worktree, objects]), output, timeout, ct, readOnly: [objects]), timeout);
+        var check = output.Result(await sandbox.RunAsync(new Profile(worktree, new WorktreeMount.ReadOnly(),
+            new CommandSpec("sh", ["-c", CleanScript, "clean", head, worktree, objects]), Binds: ["--ro-bind", objects, objects]),
+            output, timeout, ct), timeout);
         var verdict = check.Output.TrimEnd('\n');
         if (check.ExitCode != 0 || verdict != "clean" && !verdict.StartsWith("dirty: ", StringComparison.Ordinal))
-            throw new InvalidOperationException($"the clean check could not read {worktree} (exit {check.ExitCode}): {check.Error.Trim()}");
+            throw new InvalidOperationException($"the clean check could not read {worktree} (exit {check.ExitCode}): {Untrusted.Printable(check.Error.Trim())}");
         var dirt = verdict == "clean" ? null : verdict["dirty: ".Length..];
         return new HeadObservation(branch ?? "HEAD", new CommitId(head),
             dirt is null ? null : dirt.Length <= MaxDirt ? dirt : $"{dirt[..MaxDirt]}...", descends);
@@ -211,9 +225,12 @@ public sealed class GitIsolation(string slices, Func<ItemId, string> remote, San
     Task<ToolResult> Run(string protocol, CancellationToken ct, params string[] arguments) =>
         Tool.ReadAsync("git", [.. Hardened, "-c", $"protocol.{protocol}.allow=always", .. arguments], timeout, ct);
 
-    static string Checked(ToolResult result, string[] arguments) =>
-        result.ExitCode == 0 ? result.Output : throw Failed(result, string.Join(' ', arguments));
+    /// <summary>The coordinating agent reads these errors, so the sandboxed upload-pack command, which names the session
+    /// bus and the factory's paths, is left out.</summary>
+    static string Checked(ToolResult result, string[] arguments) => result.ExitCode == 0 ? result.Output : throw Failed(result,
+        string.Join(' ', arguments.Select(a => a.StartsWith("--upload-pack=", StringComparison.Ordinal) ? "--upload-pack=<sandboxed>" : a)));
 
-    static InvalidOperationException Failed(ToolResult result, string command) =>
-        new($"git {command} exited {result.ExitCode}: {result.Error.Trim()}");
+    /// <summary>git's error can quote the implementer's paths and refs, so it is made printable.</summary>
+    internal static InvalidOperationException Failed(ToolResult result, string command) =>
+        new($"git {command} exited {result.ExitCode}: {Untrusted.Printable(result.Error.Trim())}");
 }

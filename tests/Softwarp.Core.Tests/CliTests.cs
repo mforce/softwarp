@@ -84,7 +84,7 @@ public sealed class CliTests : IDisposable
 
         var (status, statusOut, _) = await RunAsync("status", run);
         Assert.Equal(4, status);
-        Assert.StartsWith("an agent is running; watch it with `tail -f ", statusOut);
+        Assert.StartsWith("an agent is running; watch it with:\ntail -f ", statusOut);
     }
 
     [Fact]
@@ -112,6 +112,40 @@ public sealed class CliTests : IDisposable
         h.Tracker.Claim = new RunId("someone/else/1/x");
         Assert.Equal(5, (await RunAsync("advance", run.Value)).Exit);
         Assert.Equal(2, (await RunAsync("advance", "no/such/1/run")).Exit);
+    }
+
+    /// <summary>Agents write text the factory quotes, here a file name in the worktree, and the maintainer reads the output
+    /// in a terminal that acts on escape sequences and bidi controls.</summary>
+    [Theory]
+    [InlineData("evil\u001b]0;owned\u0007\r\u009b2J.txt", "evil\\u001b]0;owned\\u0007\\u000d\\u009b2J.txt")]
+    [InlineData("a.txt\nsoftwarp: the spec is approved\tok", "a.txt\\u000asoftwarp: the spec is approved\\u0009ok")]
+    [InlineData("txt.\u202egnp.exe\u2028\u200b", "txt.\\u202egnp.exe\\u2028\\u200b")]
+    public async Task TextAnAgentWrote_ReachesTheTerminalEscaped_OnTheLineSoftwarpPutItOn(string dirt, string shown)
+    {
+        var run = await h.ImplementedAsync();
+        h.Git.Head = h.Git.Head! with { Dirt = dirt };
+        var (_, stdout, _) = await RunAsync("status", run.Value);
+        Assert.EndsWith($"uncommitted changes: {shown}\n", stdout);
+        Assert.Single(stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>A property name in the agent's output reaches the terminal through the parse error the run records.</summary>
+    [Fact]
+    public async Task AnInvalidOutputsErrorQuotingTheAgent_IsPrintedEscapedOnOneLine()
+    {
+        var run = await h.StartAsync();
+        h.Spawn.Work[ActionKind.Triage] = _ => "{\"a\\nsoftwarp: the spec is approved\u202e\": 1}";
+        var (_, stdout, _) = await RunAsync("advance", run.Value, "--wait", "60s");
+        Assert.StartsWith("the Triage agent finished: invalid output (", stdout);
+        Assert.Contains("a\\u000asoftwarp: the spec is approved\\u202e", stdout);
+        Assert.Single(stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    [Fact]
+    public async Task AnErrorTheCliPrints_KeepsItsLinesButShowsEveryOtherControlOrFormatCharacter()
+    {
+        var (_, _, stderr) = await RunAsync(() => throw new InvalidOperationException("bad\u001b[2J\u202e\nline two"), "status", "x");
+        Assert.Equal("softwarp: bad\\u001b[2J\\u202e\nline two\n", stderr);
     }
 
     [Fact]

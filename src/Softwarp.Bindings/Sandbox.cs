@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Softwarp.Core;
 
@@ -26,21 +27,67 @@ public sealed record GateLimits(TimeSpan BuildTimeout, TimeSpan TargetedTestsTim
     };
 }
 
-/// <summary>Where every command that reads or runs the implementer's repository runs: a bubblewrap sandbox inside a
-/// systemd user scope, with the network off and the environment cleared, systemd-run's own included. It sees /usr and
-/// /etc read-only; an empty home with softwarp's own package cache, at the NuGet cache path, and the configured
-/// toolchains bound back read-only; the worktree, with its .git directory read-only; and, for a gate, a fresh report
-/// directory at /softwarp/out. It never sees the run store, softwarp's trusted clone, the session bus or any other
-/// secret.</summary>
+/// <summary>How a sandbox shows the worktree.</summary>
+internal abstract record WorktreeMount
+{
+    private WorktreeMount() { }
+
+    /// <summary>Read-only: softwarp's own reads of the implementer's repository.</summary>
+    public sealed record ReadOnly : WorktreeMount;
+
+    /// <summary>A gate: the tree writable, its .git read-only, and a fresh report directory at /softwarp/out.</summary>
+    public sealed record Gate(string Reports) : WorktreeMount;
+
+    /// <summary>The whole repository writable, .git included: softwarp's checkout while it makes the repository, and the
+    /// agents whose work is commits.</summary>
+    public sealed record Writable : WorktreeMount;
+
+    /// <summary>A writable view whose writes, .git included, live on a tmpfs and vanish with the sandbox: agents whose work
+    /// is not commits, so nothing they write reaches the repository.</summary>
+    public sealed record Overlay : WorktreeMount;
+
+    internal IEnumerable<string> Binds(string worktree)
+    {
+        var dotGit = Path.Combine(worktree, ".git");
+        return this switch
+        {
+            ReadOnly => ["--ro-bind", worktree, worktree],
+            Gate gate => ["--bind", worktree, worktree, "--ro-bind", dotGit, dotGit, "--bind", gate.Reports, Sandbox.ReportDirectory],
+            Writable => ["--bind", worktree, worktree],
+            Overlay => ["--overlay-src", worktree, "--tmp-overlay", worktree],
+            _ => throw new UnreachableException($"no binds for {this}"),
+        };
+    }
+}
+
+/// <summary>One sandbox: the worktree as the mount shows it, the command run there, and what else it gets. The launch
+/// decides the network: a scope is always offline, an agent's service always online.</summary>
+/// <param name="Environment">Variables on top of the sandbox's own.</param>
+/// <param name="Binds">bwrap bind arguments on top of the worktree's.</param>
+internal sealed record Profile(string Worktree, WorktreeMount Mount, CommandSpec Command,
+    IReadOnlyList<(string Name, string Value)>? Environment = null, IReadOnlyList<string>? Binds = null);
+
+/// <summary>A transient user service that outlives softwarp: its unit name, its description in `systemctl list-units`,
+/// the time systemd lets it run, the log its stdout and stderr append to, and the stamp its ExecStartPre touches.</summary>
+internal sealed record Service(string Unit, string Description, TimeSpan RuntimeMax, string Log, string Stamp);
+
+/// <summary>Where every command that reads or runs the implementer's repository runs: a bubblewrap sandbox in a systemd
+/// user unit, with the environment cleared, systemd-run's own included. Gates and softwarp's own git run offline in a
+/// scope that ends with the call; agents run online in a service that outlives it. Every sandbox sees /usr and /etc
+/// read-only, an empty home with the configured toolchains bound back read-only, and the worktree as its
+/// <see cref="WorktreeMount"/> shows it. The offline ones also see softwarp's own package cache at the NuGet cache path. No
+/// sandbox sees the run store, softwarp's trusted clone, the session bus or any other secret.</summary>
 /// <param name="home">The maintainer's home, hidden behind an empty tmpfs inside the sandbox.</param>
 public sealed class Sandbox(GateLimits limits, string home, string systemdRun = "/usr/bin/systemd-run",
     string bwrap = "/usr/bin/bwrap")
 {
-    const string ReportDirectory = "/softwarp/out";
+    internal const string ReportDirectory = "/softwarp/out";
+    const string Systemctl = "/usr/bin/systemctl";
     const long TmpBytes = 2L << 30, HomeBytes = 1L << 30;
+    const int StopSeconds = 5;
     // The scope's own runtime cap only backs up the caller's timeout, so it fires after it.
     static readonly TimeSpan Backstop = TimeSpan.FromMinutes(1);
-    static readonly TimeSpan PreflightTimeout = TimeSpan.FromMinutes(1);
+    static readonly TimeSpan PreflightTimeout = TimeSpan.FromMinutes(1), Call = TimeSpan.FromSeconds(30);
 
     public GateLimits Limits => limits;
 
@@ -59,15 +106,15 @@ public sealed class Sandbox(GateLimits limits, string home, string systemdRun = 
             : $"{dotGit.FullName} is not a directory in a worktree that is not a link, so the sandbox will not bind it";
     }
 
-    /// <summary>Starts the same sandbox around `true`, so a missing bwrap, a missing user systemd manager or a bad bind is
-    /// told apart from the command failing.</summary>
-    internal async Task<string?> ProblemAsync(string worktree, string reports, CancellationToken ct)
+    /// <summary>Starts a sandbox with the mount around `true`, so a missing bwrap, a missing user systemd manager, a bad
+    /// bind or a mount this machine's bwrap cannot make is told apart from the command failing.</summary>
+    internal async Task<string?> ProblemAsync(string worktree, WorktreeMount mount, CancellationToken ct)
     {
         if (BindProblem(worktree) is { } problem) return problem;
         var output = new Captured("the sandbox");
         try
         {
-            return await RunAsync(worktree, reports, new CommandSpec("/usr/bin/true", []), output, PreflightTimeout, ct) switch
+            return await RunAsync(new Profile(worktree, mount, new CommandSpec("/usr/bin/true", [])), output, PreflightTimeout, ct) switch
             {
                 0 => null,
                 null => $"the sandbox did not start within {PreflightTimeout}",
@@ -80,14 +127,11 @@ public sealed class Sandbox(GateLimits limits, string home, string systemdRun = 
         }
     }
 
-    /// <summary>Runs the command in the sandbox and returns its exit code, or null when it ran past the timeout and was
-    /// killed. The factory's own directories in readOnly are bound read-only at their own path.</summary>
-    /// <param name="reports">The directory bound at <see cref="ReportDirectory"/>; when set, the worktree is writable,
-    /// as a gate needs; when null, the worktree is read-only.</param>
+    /// <summary>Runs the profile offline in a scope with its caps and returns the command's exit code, or null when it
+    /// ran past the timeout and was killed.</summary>
     /// <exception cref="InvalidOperationException">The worktree cannot be bound safely.</exception>
-    internal Task<int?> RunAsync(string worktree, string? reports, CommandSpec command, IOutputSink sink, TimeSpan timeout,
-        CancellationToken ct, IEnumerable<string>? readOnly = null) =>
-        Tool.RunAsync(systemdRun, Argv(worktree, reports, timeout, command, readOnly ?? []), Launcher, sink, timeout, ct);
+    internal Task<int?> RunAsync(Profile profile, IOutputSink sink, TimeSpan timeout, CancellationToken ct) =>
+        Tool.RunAsync(systemdRun, Scope(profile, timeout), Launcher, sink, timeout, ct);
 
     /// <summary>A command for git's --upload-pack that serves the implementer's repository from inside the read-only
     /// sandbox: every path that repository names (a .git file, a linked objects directory or ref, a FIFO) resolves inside
@@ -97,12 +141,46 @@ public sealed class Sandbox(GateLimits limits, string home, string systemdRun = 
     internal string UploadPack(string worktree, TimeSpan timeout) => string.Join(' ', new[] { "/usr/bin/env", "-i" }
         .Concat(Launcher.Select(variable => $"{variable.Name}={variable.Value}"))
         .Append(systemdRun)
-        .Concat(Argv(worktree, null, timeout, new CommandSpec("git-upload-pack", ["--strict"]), []))
-        .Select(word => $"'{word.Replace("'", "'\\''")}'"));
+        .Concat(Scope(new Profile(worktree, new WorktreeMount.ReadOnly(), new CommandSpec("git-upload-pack", ["--strict"])), timeout))
+        .Select(Quoted));
 
-    /// <summary>The whole environment systemd-run starts with: the session's runtime directory and bus, which it needs to
-    /// reach the user manager. bwrap's first process inside the sandbox keeps this environment, and every process in the
-    /// sandbox can read it at /proc/1/environ, so it holds nothing else of the caller's.</summary>
+    /// <summary>Starts the profile in a transient user service with the scope's caps, systemd's own runtime cap, a short
+    /// stop timeout, stdin closed and its output appended to the log, and returns systemd-run's result. systemd refuses a
+    /// second start under a loaded name. With --service-type=exec, systemd-run returns once the stamp exists and the
+    /// command has started.</summary>
+    /// <exception cref="InvalidOperationException">The worktree cannot be bound safely, or systemd-run ran past its timeout.</exception>
+    internal Task<ToolResult> StartAsync(Service service, Profile profile, CancellationToken ct) => Tool.ReadAsync(systemdRun,
+    [
+        "--user", $"--unit={service.Unit}", $"--description={service.Description}", "--quiet", "--collect",
+        "--expand-environment=no", "--service-type=exec",
+        "-p", $"RuntimeMaxSec={(long)service.RuntimeMax.TotalSeconds}", "-p", $"TimeoutStopSec={StopSeconds}", .. Caps,
+        "-p", "StandardInput=null", "-p", $"StandardOutput=append:{service.Log}", "-p", $"StandardError=append:{service.Log}",
+        // ':' turns off systemd's $-expansion; in a transient unit % is literal already.
+        "-p", $"ExecStartPre=:/usr/bin/touch \"{service.Stamp.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"",
+        // The user manager's environment would reach every process in the sandbox through /proc/1/environ.
+        "/usr/bin/env", "-i", "PATH=/usr/bin:/bin",
+        // The host network is shared for part B1 only, a HIGH finding the maintainer accepted: agents reach the host's
+        // loopback services and abstract sockets. Part B2 moves them into a private network namespace (passt) before the
+        // pilot and before any agent works on a real repository.
+        .. Bwrap(profile, network: true),
+    ], Call, ct, environment: Launcher);
+
+    /// <summary>Whether the unit may still have processes: every ActiveState but inactive and failed, including one that
+    /// is still stopping. An unknown unit shows as inactive.</summary>
+    internal async Task<bool> RunningAsync(string unit, CancellationToken ct)
+    {
+        var show = await Tool.ReadAsync(Systemctl, ["--user", "show", unit, "-p", "ActiveState", "--value"], Call, ct, environment: Launcher);
+        return show.ExitCode == 0
+            ? show.Output.Trim() is not ("inactive" or "failed")
+            : throw new InvalidOperationException($"systemctl could not read {unit} (exit {show.ExitCode}): {show.Error.Trim()}");
+    }
+
+    /// <summary>The word in single quotes, for a POSIX shell.</summary>
+    internal static string Quoted(string word) => $"'{word.Replace("'", "'\\''")}'";
+
+    /// <summary>The whole environment systemd-run and systemctl start with: the session's runtime directory and bus,
+    /// which they need to reach the user manager. bwrap's first process inside a scope keeps this environment, and every
+    /// process in the sandbox can read it at /proc/1/environ, so it holds nothing else of the caller's.</summary>
     static IEnumerable<(string Name, string Value)> Launcher =>
     [
         ("PATH", "/usr/local/bin:/usr/bin:/bin"),
@@ -111,43 +189,55 @@ public sealed class Sandbox(GateLimits limits, string home, string systemdRun = 
             .Select(name => (name, System.Environment.GetEnvironmentVariable(name)!)),
     ];
 
-    /// <summary>systemd-run's arguments: a scope with its caps around bwrap around the command.</summary>
-    IEnumerable<string> Argv(string worktree, string? reports, TimeSpan timeout, CommandSpec command, IEnumerable<string> readOnly)
+    string[] Caps => ["-p", $"TasksMax={limits.TasksMax}", "-p", $"MemoryMax={limits.MemoryMax}", "-p", "MemorySwapMax=0"];
+
+    /// <summary>systemd-run's arguments: a scope with its caps around the offline sandbox.</summary>
+    IEnumerable<string> Scope(Profile profile, TimeSpan timeout) =>
+    [
+        "--user", "--scope", "--quiet", "--collect", "--expand-environment=no",
+        $"--unit=softwarp-sandbox-{RandomNumberGenerator.GetHexString(12, lowercase: true)}", .. Caps,
+        "-p", $"RuntimeMaxSec={(long)(timeout + Backstop).TotalSeconds}",
+        .. Bwrap(profile, network: false),
+    ];
+
+    /// <summary>bwrap's arguments, the one profile every sandbox shares: every namespace new, the network's too unless the
+    /// launch shares it, and no user namespace inside; the environment cleared to <see cref="Environment"/> and the
+    /// profile's variables; /usr and /etc read-only; /tmp, /run and the home on tmpfs; with the network, the host's DNS
+    /// stub resolver; offline, softwarp's package cache; the configured toolchains read-only; then the worktree's mount,
+    /// the profile's binds and the command, run in the worktree.</summary>
+    /// <exception cref="InvalidOperationException">The worktree cannot be bound safely.</exception>
+    IEnumerable<string> Bwrap(Profile profile, bool network)
     {
-        if (BindProblem(worktree) is { } problem) throw new InvalidOperationException(problem);
-        var dotGit = Path.Combine(worktree, ".git");
+        if (BindProblem(profile.Worktree) is { } problem) throw new InvalidOperationException(problem);
         return
         [
-            "--user", "--scope", "--quiet", "--collect", "--expand-environment=no",
-            $"--unit=softwarp-{(reports is null ? "read" : "gate")}-{RandomNumberGenerator.GetHexString(12, lowercase: true)}",
-            "-p", $"TasksMax={limits.TasksMax}", "-p", $"MemoryMax={limits.MemoryMax}", "-p", "MemorySwapMax=0",
-            "-p", $"RuntimeMaxSec={(long)(timeout + Backstop).TotalSeconds}",
-            bwrap, "--unshare-all", "--unshare-user", "--disable-userns", "--die-with-parent", "--new-session",
-            "--clearenv",
-            .. Environment().SelectMany(variable => new[] { "--setenv", variable.Name, variable.Value }),
+            bwrap, "--unshare-all", .. network ? ["--share-net"] : Array.Empty<string>(), "--unshare-user", "--disable-userns",
+            "--die-with-parent", "--new-session", "--clearenv",
+            .. Environment(network).Concat(profile.Environment ?? []).SelectMany(variable => new[] { "--setenv", variable.Name, variable.Value }),
             "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
             "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin", "--ro-bind", "/etc", "/etc",
             "--proc", "/proc", "--dev", "/dev",
-            "--size", $"{TmpBytes}", "--tmpfs", "/tmp", "--tmpfs", "/run", "--size", $"{HomeBytes}", "--tmpfs", home,
-            "--ro-bind-try", Packages, Path.Combine(home, ".nuget", "packages"),
+            "--size", $"{TmpBytes}", "--tmpfs", "/tmp", "--tmpfs", "/run",
+            .. network ? ["--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve"] : Array.Empty<string>(),
+            "--size", $"{HomeBytes}", "--tmpfs", home,
+            .. network ? Array.Empty<string>() : ["--ro-bind-try", Packages, Path.Combine(home, ".nuget", "packages")],
             .. limits.Toolchains.SelectMany(toolchain => new[] { "--ro-bind", toolchain, toolchain }),
-            reports is null ? "--ro-bind" : "--bind", worktree, worktree, "--ro-bind", dotGit, dotGit,
-            .. reports is null ? Array.Empty<string>() : ["--bind", reports, ReportDirectory],
-            .. readOnly.SelectMany(directory => new[] { "--ro-bind", directory, directory }),
-            "--chdir", worktree, "--", command.Executable, .. command.Arguments,
+            .. profile.Mount.Binds(profile.Worktree),
+            .. profile.Binds ?? [],
+            "--chdir", profile.Worktree, "--", profile.Command.Executable, .. profile.Command.Arguments,
         ];
     }
 
-    /// <summary>The whole environment a sandboxed command gets; the caller's own, which may hold session tokens, is
+    /// <summary>The environment every sandboxed command gets; the caller's own, which may hold session tokens, is
     /// cleared.</summary>
-    IEnumerable<(string Name, string Value)> Environment() =>
+    IEnumerable<(string Name, string Value)> Environment(bool network) =>
     [
         ("PATH", "/usr/local/bin:/usr/bin:/bin"), ("HOME", home), ("USER", System.Environment.UserName),
         ("LANG", "C.UTF-8"), ("TMPDIR", "/tmp"),
         ("DOTNET_CLI_TELEMETRY_OPTOUT", "1"), ("DOTNET_NOLOGO", "1"), ("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1"),
         ("DOTNET_GENERATE_ASPNET_CERTIFICATE", "false"),
         // Audit needs the network, which gates lack; CI runs it.
-        ("NuGetAudit", "false"),
+        .. network ? Array.Empty<(string, string)>() : [("NuGetAudit", "false")],
         // A __pycache__ left in the worktree would make the tree dirty and the receipt untrusted.
         ("PYTHONDONTWRITEBYTECODE", "1"),
     ];

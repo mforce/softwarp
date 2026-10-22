@@ -29,14 +29,14 @@ public sealed class GateRunner(Sandbox sandbox, string scratch, PackageFetch? fe
         {
             log.Note($"$ {command.Executable} {string.Join(' ', command.Arguments)}");
             var timeout = sandbox.Limits.Timeout(kind);
-            if ((await sandbox.ProblemAsync(workspace.Path, output, ct) ?? await FetchProblemAsync(request, log, timeout, ct)) is { } problem)
+            if ((await sandbox.ProblemAsync(workspace.Path, new WorktreeMount.Gate(output), ct) ?? await FetchProblemAsync(request, log, timeout, ct)) is { } problem)
             {
                 log.Note(problem);
                 return new GateRun(Unavailable, null);
             }
             // stdout and stderr reach the log through pipes, so the gate never holds a descriptor for it. bwrap's pid
             // namespace takes every descendant with it at the timeout, setsid daemons included, so both pipes close.
-            if (await sandbox.RunAsync(workspace.Path, output, command, log, timeout, ct) is { } code)
+            if (await sandbox.RunAsync(new Profile(workspace.Path, new WorktreeMount.Gate(output), command), log, timeout, ct) is { } code)
                 return new GateRun(code, kind == GateKind.TargetedTests ? Count(output, report) : null);
             log.Note($"the gate ran past its {timeout} timeout and was stopped");
             return new GateRun(GateReceipt.TimedOut, null);

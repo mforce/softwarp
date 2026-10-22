@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization;
 
 namespace Softwarp.Core;
 
@@ -21,10 +22,18 @@ public enum MaintainerVerb { Approve, Revise, Resume }
 public sealed record ItemId(string Owner, string Repo, long Number);
 /// <summary>The issue as the tracker showed it at intake. Revision is the forge's version marker for that text.</summary>
 public sealed record WorkItem(ItemId Id, string Title, string Body, string Revision, Uri Url);
-/// <summary>The model id each agent role runs on, pinned for the whole run.</summary>
-public sealed record ModelPins(string Triage, string Spec, string Implement, string Cleanup)
+/// <summary>The harness an agent runs in.</summary>
+[JsonConverter(typeof(HarnessJson))]
+public enum Harness { Claude, Codex }
+
+/// <summary>How an agent role runs: its harness, model id and reasoning effort.</summary>
+public sealed record AgentPin(Harness Harness, string Model, string Effort);
+
+/// <summary>How each agent role runs, pinned for the whole run at intake, so a config change mid-run cannot switch an
+/// attempt's harness, model or effort.</summary>
+public sealed record AgentPins(AgentPin Triage, AgentPin Spec, AgentPin Implement, AgentPin Cleanup)
 {
-    public string For(ActionKind role) => role switch
+    public AgentPin For(ActionKind role) => role switch
     {
         ActionKind.Triage => Triage,
         ActionKind.Spec => Spec,
@@ -36,7 +45,7 @@ public sealed record ModelPins(string Triage, string Spec, string Implement, str
 
 /// <summary>Written once at intake and never rewritten. WorkflowFile is the digest of WORKFLOW.md's bytes at Trunk.</summary>
 public sealed record RunManifest(RunId Run, CommitId Trunk, string Branch, string MaintainerAccountId, Workflow Workflow,
-    WorkItem Item, Digest WorkflowFile, ModelPins Models);
+    WorkItem Item, Digest WorkflowFile, AgentPins Agents);
 
 public sealed record CommandSpec(string Executable, ImmutableArray<string> Arguments)
 {

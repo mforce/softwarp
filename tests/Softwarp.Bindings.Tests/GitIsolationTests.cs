@@ -62,6 +62,32 @@ public sealed class GitIsolationTests : IDisposable
     }
 
     [Fact]
+    public async Task Ensure_ChecksOutInTheSandbox_SoWithoutOneNoRepositoryIsMadeAndNoneIsLeftHalfMade()
+    {
+        var run = git.Manifest((await git.Isolation.ReadTrunkAsync(GitRemote.Item, None)).Commit);
+        var noSandbox = new GitIsolation(git.Slices, _ => git.Remote, new Sandbox(GateLimits.Default, GitRemote.Home, "/usr/bin/false"));
+
+        Assert.Contains("checkout", (await Assert.ThrowsAsync<InvalidOperationException>(() => noSandbox.EnsureAsync(run, None))).Message);
+        Assert.Equal(["trusted.git"], Directory.EnumerateDirectories(Path.Combine(git.Slices, "mforce", "widget")).Select(Path.GetFileName));
+    }
+
+    /// <summary>The checkout's git reads no system config and follows no replace ref. Neither can be planted from a test
+    /// without root, so the test reads the sandbox's command line through a recording bwrap.</summary>
+    [Fact]
+    public async Task Checkout_RunsGitWithoutTheSystemConfigOrReplaceRefs()
+    {
+        var (argv, recorder) = (Path.Combine(git.Root, "bwrap.argv"), Path.Combine(git.Root, "bwrap"));
+        GitRemote.Script(recorder, $"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{argv}'\nexec /usr/bin/bwrap \"$@\"\n");
+        var isolation = new GitIsolation(git.Slices, _ => git.Remote, new Sandbox(GateLimits.Default, GitRemote.Home, bwrap: recorder));
+        var run = git.Manifest((await isolation.ReadTrunkAsync(GitRemote.Item, None)).Commit);
+
+        await isolation.EnsureAsync(run, None);
+        var checkout = Assert.Single(File.ReadAllLines(argv), line => line.Contains(" checkout "));
+        Assert.Contains("--setenv GIT_CONFIG_NOSYSTEM 1", checkout);
+        Assert.Contains("--setenv GIT_NO_REPLACE_OBJECTS 1", checkout);
+    }
+
+    [Fact]
     public async Task Ensure_AfterTheRepositoryIsLost_RemakesItAtTheLastImportedHead()
     {
         var (run, workspace) = await git.WorktreeAsync();
@@ -531,6 +557,28 @@ public sealed class GitIsolationTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() => git.Isolation.PushAsync(run, head, Push, None));
         Assert.Null(git.RemoteRef($"refs/heads/{run.Branch}"));
     }
+
+    /// <summary>The coordinating agent reads these errors, and the sandbox command names the session bus and the factory's
+    /// paths.</summary>
+    [Fact]
+    public async Task ErrorFromAReadOfTheImplementersRepository_NamesNoSandboxCommand()
+    {
+        var (run, workspace) = await git.WorktreeAsync();
+        var dotGit = Path.Combine(workspace.Path, ".git");
+        Directory.Delete(dotGit, recursive: true);
+        Directory.CreateDirectory(dotGit);
+
+        var message = (await Assert.ThrowsAsync<InvalidOperationException>(() => git.Isolation.ObserveAsync(run, None))).Message;
+        Assert.Contains("ls-remote", message);
+        Assert.DoesNotContain("bwrap", message);
+        Assert.DoesNotContain("XDG_RUNTIME_DIR", message);
+    }
+
+    /// <summary>git's error can quote the implementer's paths and refs, and the CLI keeps an error's own line breaks.</summary>
+    [Fact]
+    public void GitError_QuotesWhatGitPrintedWithItsLineBreaksAndFormatCharactersAsText() =>
+        Assert.Equal("git fetch exited 128: fatal: bad ref x\\u000asoftwarp: the spec is approved\\u202e",
+            GitIsolation.Failed(new ToolResult(128, "", "fatal: bad ref x\nsoftwarp: the spec is approved\u202e\n"), "fetch").Message);
 
     [Theory]
     [InlineData("..", "widget")]
