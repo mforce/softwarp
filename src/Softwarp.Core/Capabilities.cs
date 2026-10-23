@@ -56,8 +56,7 @@ public interface ISpawn
     Task<bool> WaitAsync(RunManifest run, OperationId operation, DateTimeOffset deadline, CancellationToken ct);
     /// <summary>The output the agent's harness gave, read once the agent has exited, and never anything else the agent
     /// wrote. It is as untrusted as the agent; the factory reads it through the role's contract.</summary>
-    /// <exception cref="InvalidDataException">There is none, or it is not a regular file, or it holds more than
-    /// <see cref="Factory.MaxOutputBytes"/>.</exception>
+    /// <exception cref="InvalidDataException">There is none, or it is not a regular file, or it is too large to read.</exception>
     byte[] Output(RunManifest run, OperationId operation);
 }
 

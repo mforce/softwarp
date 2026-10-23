@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Softwarp.Core;
@@ -60,6 +62,8 @@ public static class Composition
         var limits = config.Gates ?? GateLimits.Default;
         var (runs, slices) = (config.Runs ?? Path.Combine(home, ".softwarp", "runs"), config.Slices ?? Path.Combine(home, ".softwarp-slices"));
         var configDirectory = Path.GetDirectoryName(Path.GetFullPath(configPath))!;
+        if (Path.GetFileName(configDirectory) != "softwarp")
+            throw new InvalidOperationException($"{configPath}: the machine config must sit in a directory named softwarp, so the credentials beside it are not a login's or key's own directory (~/.claude, ~/.ssh)");
         string[] guarded = [runs, slices, configDirectory];
         // Agents write the worktrees under the slices root.
         foreach (var directory in new[] { runs, configDirectory })
@@ -74,7 +78,7 @@ public static class Composition
         foreach (var directory in guarded)
             if (new[] { sandbox.Packages, scratch }.FirstOrDefault(shared => Overlaps(directory, shared)) is { } shared)
                 throw new InvalidOperationException($"{configPath}: '{directory}' overlaps {shared}, which gate sandboxes are shown");
-        if (HarnessesProblem(config, home, guarded, [runs, slices, Path.Combine(home, ".softwarp"), .. limits.Toolchains]) is { } harnesses)
+        if (HarnessesProblem(config, home, configDirectory, guarded, [runs, Path.Combine(home, ".softwarp")]) is { } harnesses)
             throw new InvalidOperationException($"{configPath}: {harnesses}");
         var isolation = new GitIsolation(slices, item => $"https://github.com/{item.Owner}/{item.Repo}.git", sandbox);
         var gates = new GateRunner(sandbox, scratch, new PackageFetch(isolation, sandbox, scratch, limits.MaxNewPackages));
@@ -82,49 +86,84 @@ public static class Composition
         return (config, store, isolation, gates, new AgentSpawn(sandbox, store, config.Harnesses));
     }
 
-    /// <summary>Why the harnesses cannot run the agents; null when they can. Every role's harness must be configured. Each
-    /// configured harness, since a run may pin one the roles no longer name, needs an install that may be bound into its
-    /// agents (<see cref="BoundPathProblem"/>) and holds the executable, and a credential that no sandbox can see but its
-    /// own (<see cref="CredentialProblem"/>).</summary>
-    /// <param name="bound">Every directory some sandbox binds; the installs are added to it.</param>
-    static string? HarnessesProblem(MachineConfig config, string home, string[] guarded, string[] bound)
+    /// <summary>Why the harnesses cannot run the agents; null when they can. Every role's harness must be configured, with
+    /// the credential field the role needs (<see cref="HarnessInstall.CredentialFor"/>). Each configured harness, since a run
+    /// may pin one the roles no longer name, needs an install that may be bound into its agents
+    /// (<see cref="BoundPathProblem"/>) and holds the executable, and each credential it names must be one that no sandbox
+    /// can see but its own (<see cref="CredentialProblem"/>). No two credentials may be the same file or content
+    /// (<see cref="DuplicateProblem"/>).</summary>
+    /// <param name="bound">The directories some sandbox binds that the machine config's directory can still hold or sit in:
+    /// the run store and ~/.softwarp. Bind refuses a toolchain, an install or the slices root that overlaps that directory.</param>
+    static string? HarnessesProblem(MachineConfig config, string home, string configDirectory, string[] guarded, string[] bound)
     {
-        foreach (var used in Enum.GetValues<ActionKind>().Select(role => config.Agents.For(role).Harness))
-            if (!config.Harnesses.ContainsKey(used)) return $"a role runs on {Name(used)}, and harnesses.{Name(used)} is missing";
-        string[] all = [.. bound, .. config.Harnesses.Values.Select(install => install.Install)];
+        foreach (var role in Enum.GetValues<ActionKind>())
+        {
+            var used = config.Agents.For(role).Harness;
+            if (!config.Harnesses.TryGetValue(used, out var configured)) return $"a role runs on {Name(used)}, and harnesses.{Name(used)} is missing";
+            if (configured.CredentialFor(role) is (var field, null))
+                return $"the {Name(role)} role runs on {Name(used)}, and harnesses.{Name(used)}.{field} is missing";
+        }
+        List<(string Name, string Hash)> credentials = [];
         foreach (var (harness, install) in config.Harnesses)
         {
             var profile = HarnessProfile.All[harness];
             if ((BoundPathProblem(install.Install, home, guarded, profile.InstallIsFile)
                  ?? (File.Exists(profile.Executable(install.Install)) ? null : "holds no executable")) is { } problem)
                 return $"the {Name(harness)} install '{install.Install}' {problem}, so no agent may see it";
-            if (CredentialProblem(install.Credential, home, all) is { } credential)
-                return $"the {Name(harness)} credential '{install.Credential}' {credential}";
+            foreach (var (field, file) in Enum.GetValues<ActionKind>().Select(install.CredentialFor).Distinct())
+            {
+                if (file is null) continue;
+                if (CredentialProblem(file, home, configDirectory, bound, out var hash) is { } credential)
+                    return $"the {Name(harness)} {field} '{file}' {credential}";
+                credentials.Add(($"harnesses.{Name(harness)}.{field}", hash));
+            }
         }
-        return null;
+        return DuplicateProblem(credentials);
     }
 
-    static string Name(Harness harness) => harness.ToString().ToLowerInvariant();
+    internal static string Name(Enum value) => value.ToString().ToLowerInvariant();
+
+    /// <summary>Why two credentials are the same file or content; null when no two are. Entries are compared by the
+    /// SHA-256 of the content with surrounding whitespace cut (the agent's launch script reads the file through
+    /// `$(cat ...)`, which cuts a trailing newline), so two entries that name one file match too. A spec agent and an
+    /// implementer with one credential could pass the holdouts through it. The message names the entries, never the content.</summary>
+    static string? DuplicateProblem(List<(string Name, string Hash)> credentials) =>
+        credentials.GroupBy(credential => credential.Hash).FirstOrDefault(same => same.Count() > 1) is { } twins
+            ? $"{string.Join(" and ", twins.Select(credential => credential.Name))} hold the same credential"
+            : null;
+
+    /// <summary>A token from `claude setup-token` or an OpenAI API key is a few hundred bytes.</summary>
+    const int MaxCredentialBytes = 4096;
 
     /// <summary>Why a credential file may not be handed to a harness; null when it may. It must be a regular file with
-    /// content and mode 0600, which only its owner can read, so it is this user's; inside the home, which every sandbox
-    /// hides, with no link on the way; and outside every directory a sandbox binds, so only the agents it is bound into
-    /// read it.</summary>
-    internal static string? CredentialProblem(string credential, string home, IEnumerable<string> bound)
+    /// content and mode 0600, which only its owner can read, so it is this user's; inside the machine config's directory,
+    /// which no sandbox binds and Bind requires to be named softwarp, so the maintainer's own logins (~/.claude, ~/.codex)
+    /// are refused by place; one token, which refuses a copy or hard link of a JSON login by content; with no link on the
+    /// way; and outside every directory a sandbox binds, so only the agents it is bound into read it. The file is read once,
+    /// through <see cref="UntrustedFile"/> and within <see cref="MaxCredentialBytes"/>.</summary>
+    /// <param name="hash">The SHA-256 of the content with surrounding whitespace cut; "" when the file is refused first.</param>
+    internal static string? CredentialProblem(string credential, string home, string configDirectory, IEnumerable<string> bound,
+        out string hash)
     {
+        hash = "";
         if (LocationProblem(credential, home) is { } problem) return problem;
+        if (!Inside(Normal(credential), Normal(configDirectory))) return $"is not inside the machine config's directory {configDirectory}";
         var file = new FileInfo(credential);
         // On Linux every FIFO, socket and device node reports size 0.
         if (!file.Exists || file.Length == 0) return "is not a regular file with content";
         if (file.UnixFileMode != (UnixFileMode.UserRead | UnixFileMode.UserWrite)) return "does not have mode 0600";
+        string token;
         try
         {
-            File.OpenRead(credential).Dispose();
+            token = Encoding.UTF8.GetString(UntrustedFile.Read(credential, MaxCredentialBytes)).Trim();
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is InvalidDataException or IOException)
         {
-            return "cannot be read, so it is not this user's";
+            return $"cannot be read as a credential (unreadable, or over {MaxCredentialBytes} bytes)";
         }
+        if (token.Length == 0 || token.Any(char.IsWhiteSpace) || token.Contains('{'))
+            return "is not one token: it is empty, has whitespace inside or holds JSON, as a login or key file does";
+        hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
         return bound.FirstOrDefault(directory => Overlaps(credential, directory)) is { } inside ? $"sits inside {inside}, which a sandbox binds" : null;
     }
 
@@ -202,7 +241,7 @@ public static class Composition
 
         IEnumerable<(bool, string)> AgentRules(ActionKind role)
         {
-            var (agent, name) = (config.Agents.For(role), role.ToString().ToLowerInvariant());
+            var (agent, name) = (config.Agents.For(role), Name(role));
             var efforts = HarnessProfile.All[agent.Harness].Efforts;
             yield return (efforts.Contains(agent.Effort), $"agents.{name}.effort must be one {Name(agent.Harness)} takes: {string.Join(", ", efforts)}");
             yield return (agent.Model.Length > 0 && agent.Model[0] != '-' && !agent.Model.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)),

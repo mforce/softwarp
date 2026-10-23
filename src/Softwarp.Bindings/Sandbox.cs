@@ -106,15 +106,16 @@ public sealed class Sandbox(GateLimits limits, string home, string systemdRun = 
             : $"{dotGit.FullName} is not a directory in a worktree that is not a link, so the sandbox will not bind it";
     }
 
-    /// <summary>Starts a sandbox with the mount around `true`, so a missing bwrap, a missing user systemd manager, a bad
-    /// bind or a mount this machine's bwrap cannot make is told apart from the command failing.</summary>
-    internal async Task<string?> ProblemAsync(string worktree, WorktreeMount mount, CancellationToken ct)
+    /// <summary>Starts the profile's sandbox around `true`, so a missing bwrap, a missing user systemd manager, a bind that
+    /// cannot be made (the worktree, or a path the profile binds) or a mount this machine's bwrap cannot make is told apart
+    /// from the command failing.</summary>
+    internal async Task<string?> ProblemAsync(Profile profile, CancellationToken ct)
     {
-        if (BindProblem(worktree) is { } problem) return problem;
+        if (BindProblem(profile.Worktree) is { } problem) return problem;
         var output = new Captured("the sandbox");
         try
         {
-            return await RunAsync(new Profile(worktree, mount, new CommandSpec("/usr/bin/true", [])), output, PreflightTimeout, ct) switch
+            return await RunAsync(profile with { Command = new CommandSpec("/usr/bin/true", []) }, output, PreflightTimeout, ct) switch
             {
                 0 => null,
                 null => $"the sandbox did not start within {PreflightTimeout}",

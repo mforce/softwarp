@@ -13,10 +13,11 @@ public abstract class SpawnFixture : IAsyncLifetime
     internal Workspace workspace = null!;
     internal RunManifest run = null!;
     internal RunStore store = null!;
-    internal readonly string token = $"fake-token-{Guid.NewGuid():N}";
+    internal readonly string token = $"fake-token-{Guid.NewGuid():N}", specToken = $"fake-spec-token-{Guid.NewGuid():N}";
     readonly List<string> units = [];
 
     internal string Credential => Path.Combine(git.Root, "credential");
+    internal string SpecCredential => Path.Combine(git.Root, "spec-credential");
     internal string ClaudeInstall => Path.Combine(git.Root, "claude");
     internal string CodexInstall => Path.Combine(git.Root, "codex-vendor");
     internal string RunDirectory => store.Directory(run.Item.Id);
@@ -27,8 +28,11 @@ public abstract class SpawnFixture : IAsyncLifetime
         // A run id of its own, so tests that run at once never share a unit name.
         run = run with { Run = new RunId($"mforce/widget/7/{Guid.NewGuid():N}") };
         store = new RunStore(Path.Combine(git.Root, "runs"));
-        File.WriteAllText(Credential, token);
-        File.SetUnixFileMode(Credential, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        foreach (var (file, content) in new[] { (Credential, token), (SpecCredential, specToken) })
+        {
+            File.WriteAllText(file, content);
+            File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
     }
 
     public Task DisposeAsync()
@@ -49,7 +53,7 @@ public abstract class SpawnFixture : IAsyncLifetime
     internal AgentSpawn Spawn(string systemdRun = "/usr/bin/systemd-run") =>
         new(new Sandbox(GateLimits.Default, GitRemote.Home, systemdRun), store, new Dictionary<Harness, HarnessInstall>
         {
-            [Harness.Claude] = new(ClaudeInstall, Credential), [Harness.Codex] = new(CodexInstall, Credential),
+            [Harness.Claude] = new(ClaudeInstall, Credential, SpecCredential), [Harness.Codex] = new(CodexInstall, Credential, SpecCredential),
         });
 
     /// <summary>The operation's directories and files as the factory writes them before it launches the agent.</summary>
@@ -230,7 +234,7 @@ public sealed class AgentSpawnTests : SpawnFixture
         GitRemote.Script(bwrap, $"#!/bin/bash\ncase \" $* \" in *\" --share-net \"*) ;; *) exec /usr/bin/bwrap \"$@\";; esac\n" +
             $"trap '' TERM\ni=0; while :; do i=$((i+1)); echo $i > '{progress}'; sleep 0.1; done\n");
         var spawn = new AgentSpawn(new Sandbox(GateLimits.Default, GitRemote.Home, bwrap: bwrap), store,
-            new Dictionary<Harness, HarnessInstall> { [Harness.Claude] = new(ClaudeInstall, Credential) });
+            new Dictionary<Harness, HarnessInstall> { [Harness.Claude] = new(ClaudeInstall, Credential, SpecCredential) });
         Fake(Harness.Claude, "exit 0");
 
         await RunToEndAsync(spawn, Op, brief);
@@ -258,7 +262,7 @@ public sealed class AgentSpawnTests : SpawnFixture
         string[] hidden =
         [
             Path.Combine(other, "output.json"), Path.Combine(otherSpec, "output.json"), Path.Combine(holdouts, "digest.json"), Path.Combine(RunDirectory, "manifest.json"),
-            store.OperationFile(run.Item.Id, op, "brief.json"), brief.LogFile, Path.Combine(RunDirectory, "lock"), Credential, git.Trusted, git.Remote, git.Seed,
+            store.OperationFile(run.Item.Id, op, "brief.json"), brief.LogFile, Path.Combine(RunDirectory, "lock"), Credential, SpecCredential, git.Trusted, git.Remote, git.Seed,
             $"{home}/.ssh", $"{home}/.config", $"{home}/.config/gh", $"{home}/.config/softwarp", $"{home}/.claude", $"{home}/.claude.json",
             $"{home}/.codex", $"{home}/.paseo", $"{home}/.softwarp", $"{home}/.softwarp-slices", $"{home}/.gitconfig", $"{home}/dev",
             "/run/user", "/run/docker.sock", "/var/run/docker.sock", "/opt", "/srv", "/root",
@@ -369,7 +373,7 @@ public sealed class AgentSpawnTests : SpawnFixture
             while (await spawn.InspectAsync(run, Op, None) is AgentState.Running) await Task.Delay(200);
 
             if (result) Assert.Equal("HARNESS", Contracts.Read(spawn.Output(run, Op), Contracts.Default.CleanupOutput).PrTitle);
-            else Assert.Throws<InvalidDataException>(() => spawn.Output(run, Op));
+            else Assert.Contains("no result event with structured output among the last 64 JSON lines", Assert.Throws<InvalidDataException>(() => spawn.Output(run, Op)).Message);
             Assert.Equal("""{"pr_title":"HOST","pr_body":"b"}""", File.ReadAllText(host));
         }
         finally
@@ -378,8 +382,8 @@ public sealed class AgentSpawnTests : SpawnFixture
         }
     }
 
-    /// <summary>An output that is not a regular file the harness wrote within the factory's cap is refused at once: never
-    /// a host file through a link, never a read that blocks or runs without end.</summary>
+    /// <summary>What an agent can do to the output it leaves is refused at once: never a host file through a link, never a
+    /// read that blocks or runs without end, never a result the parse gives up on late.</summary>
     [Theory]
     [InlineData(Harness.Codex, "link to a host file")]
     [InlineData(Harness.Codex, "link to /dev/zero")]
@@ -387,9 +391,8 @@ public sealed class AgentSpawnTests : SpawnFixture
     [InlineData(Harness.Codex, "directory")]
     [InlineData(Harness.Codex, "over the cap")]
     [InlineData(Harness.Codex, "mode 000")]
-    [InlineData(Harness.Claude, "over the cap")]
-    [InlineData(Harness.Claude, "4 MiB of junk lines after the result")]
-    public async Task OutputThatIsNotAPlainFileWithinTheCap_IsInvalidDataAtOnce(Harness harness, string trick)
+    [InlineData(Harness.Claude, "junk lines after the result")]
+    public async Task OutputAnAgentCanSpoil_IsInvalidDataAtOnce(Harness harness, string trick)
     {
         var host = Path.Combine(git.Root, "host-file");
         File.WriteAllText(host, """{"pr_title":"HOST","pr_body":"b"}""");
@@ -397,17 +400,18 @@ public sealed class AgentSpawnTests : SpawnFixture
         var output = brief.OutputFile;
         Fake(harness, (harness, trick) switch
         {
-            (Harness.Claude, "4 MiB of junk lines after the result") => """
+            // Fewer bytes than the log tail holds, so the result lies inside it and only the parse cap stops the search.
+            (Harness.Claude, "junk lines after the result") => """
                 echo '{"type":"result","structured_output":{"pr_title":"t","pr_body":"b"}}'
-                yes '{' | head -c 4194304
+                yes '{' | head -c 4000000
                 """,
-            (Harness.Claude, _) => """printf '{"type":"result","structured_output":{"pr_title":"%s","pr_body":"b"}}\n' "$(head -c 2000000 /dev/zero | tr '\0' a)" """,
-            (_, "link to a host file") => $"ln -s '{host}' '{output}'",
-            (_, "link to /dev/zero") => $"ln -s /dev/zero '{output}'",
-            (_, "fifo") => $"mkfifo '{output}'",
-            (_, "directory") => $"mkdir '{output}'",
-            (_, "over the cap") => $"head -c 2000000 /dev/zero | tr '\\0' a > '{output}'",
-            _ => $$"""echo '{"pr_title":"t","pr_body":"b"}' > '{{output}}'; chmod 000 '{{output}}'""",
+            (Harness.Codex, "link to a host file") => $"ln -s '{host}' '{output}'",
+            (Harness.Codex, "link to /dev/zero") => $"ln -s /dev/zero '{output}'",
+            (Harness.Codex, "fifo") => $"mkfifo '{output}'",
+            (Harness.Codex, "directory") => $"mkdir '{output}'",
+            (Harness.Codex, "over the cap") => $"head -c 2000000 /dev/zero | tr '\\0' a > '{output}'",
+            (Harness.Codex, "mode 000") => $$"""echo '{"pr_title":"t","pr_body":"b"}' > '{{output}}'; chmod 000 '{{output}}'""",
+            _ => throw new ArgumentOutOfRangeException(nameof(trick)),
         });
         var spawn = Spawn();
         await RunToEndAsync(spawn, Op, brief);
@@ -438,6 +442,45 @@ public sealed class AgentSpawnTests : SpawnFixture
         ], File.ReadAllText(argv).Split('\0'));
     }
 
+    /// <summary>The spec agent sees the holdouts, so it never gets the account the implementer runs on.</summary>
+    [Theory]
+    [InlineData(ActionKind.Spec)]
+    [InlineData(ActionKind.Triage)]
+    [InlineData(ActionKind.Implement)]
+    [InlineData(ActionKind.Cleanup)]
+    public async Task Agent_IsBoundTheCredentialItsRoleNeeds_TheSpecAgentsOwnAndTheOtherForEveryOtherRole(ActionKind role)
+    {
+        var op = new OperationId($"0003-{role.ToString().ToLowerInvariant()}");
+        var brief = Brief(op, role);
+        var (own, other) = role == ActionKind.Spec ? (specToken, token) : (token, specToken);
+        Fake(Harness.Claude, $$"""
+            [ "$(cat /run/softwarp/credential)" = '{{own}}' ] && [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{{own}}' ] && echo "bound own"
+            grep -qF '{{other}}' /run/softwarp/credential && echo "bound other"
+            """);
+
+        var log = await RunToEndAsync(Spawn(), op, brief);
+        Assert.Contains("bound own", log);
+        Assert.DoesNotContain("bound other", log);
+    }
+
+    /// <summary>A run pins its roles' harnesses at intake and the machine config may change after, so the spawn checks the
+    /// field again, and a missing field never falls back to the other one.</summary>
+    [Theory]
+    [InlineData(ActionKind.Spec, "spec_credential")]
+    [InlineData(ActionKind.Implement, "credential")]
+    public async Task RunWhoseHarnessNoLongerHasTheFieldItsRoleNeeds_FailsClosedAndLaunchesNothing(ActionKind role, string field)
+    {
+        var op = new OperationId($"0003-{role.ToString().ToLowerInvariant()}");
+        var brief = Brief(op, role);
+        Fake(Harness.Claude, "exit 0");
+        var install = role == ActionKind.Spec ? new HarnessInstall(ClaudeInstall, Credential) : new HarnessInstall(ClaudeInstall, SpecCredential: SpecCredential);
+        var spawn = new AgentSpawn(new Sandbox(GateLimits.Default, GitRemote.Home), store, new Dictionary<Harness, HarnessInstall> { [Harness.Claude] = install });
+
+        var message = (await Assert.ThrowsAsync<InvalidOperationException>(() => LaunchAsync(spawn, op, brief))).Message;
+        Assert.Contains($"harnesses.claude.{field} is missing", message);
+        Assert.IsType<AgentState.NotLaunched>(await spawn.InspectAsync(run, op, None));
+    }
+
     [Fact]
     public async Task SpawnThatCannotStart_FailsClosedAndLeavesNoStamp()
     {
@@ -445,7 +488,21 @@ public sealed class AgentSpawnTests : SpawnFixture
         Fake(Harness.Claude, "exit 0");
         var spawn = Spawn("/usr/bin/false");
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => LaunchAsync(spawn, Op, brief));
+        Assert.Contains("could not start", (await Assert.ThrowsAsync<InvalidOperationException>(() => LaunchAsync(spawn, Op, brief))).Message);
+        Assert.IsType<AgentState.NotLaunched>(await spawn.InspectAsync(run, Op, None));
+    }
+
+    /// <summary>The preflight binds what the agent binds, so a credential that is gone is found before the attempt is
+    /// spent. The agent's own sandbox would start and fail at once.</summary>
+    [Fact]
+    public async Task AgentWhoseCredentialIsGone_IsNotStarted_AndSaysWhy()
+    {
+        var brief = Brief(Op);
+        Fake(Harness.Claude, "exit 0");
+        var spawn = Spawn();
+        File.Delete(Credential);
+
+        Assert.Contains("its sandbox cannot start here", (await Assert.ThrowsAsync<InvalidOperationException>(() => LaunchAsync(spawn, Op, brief))).Message);
         Assert.IsType<AgentState.NotLaunched>(await spawn.InspectAsync(run, Op, None));
     }
 
@@ -466,27 +523,12 @@ public sealed class AgentSpawnTests : SpawnFixture
             exec /usr/bin/bwrap "$@"
             """);
         var spawn = new AgentSpawn(new Sandbox(GateLimits.Default, GitRemote.Home, bwrap: bwrap), store,
-            new Dictionary<Harness, HarnessInstall> { [Harness.Claude] = new(ClaudeInstall, Credential) });
+            new Dictionary<Harness, HarnessInstall> { [Harness.Claude] = new(ClaudeInstall, Credential, SpecCredential) });
 
         var message = (await Assert.ThrowsAsync<InvalidOperationException>(() => LaunchAsync(spawn, op, brief))).Message;
         Assert.Contains("overlay", message);
         Assert.Contains("Unknown option --overlay-src", message);
         Assert.IsType<AgentState.NotLaunched>(await spawn.InspectAsync(run, op, None));
-    }
-
-    /// <summary>A sandbox this machine cannot make (here, no bwrap) must not start any agent, so no attempt is spent.</summary>
-    [Fact]
-    public async Task AgentWhoseSandboxCannotStart_LeavesNoUnitNoStampAndIsNotLaunched()
-    {
-        var brief = Brief(Op);
-        Fake(Harness.Claude, "exit 0");
-        var spawn = new AgentSpawn(new Sandbox(GateLimits.Default, GitRemote.Home, bwrap: "/nonexistent/bwrap"), store,
-            new Dictionary<Harness, HarnessInstall> { [Harness.Claude] = new(ClaudeInstall, Credential) });
-
-        Assert.Contains("could not start", (await Assert.ThrowsAsync<InvalidOperationException>(() => LaunchAsync(spawn, Op, brief))).Message);
-        Assert.Equal("not-found", Systemctl("show", AgentSpawn.Unit(run.Run, Op), "-p", "LoadState", "--value").Trim());
-        Assert.False(File.Exists(store.OperationFile(run.Item.Id, Op, "agent.started")));
-        Assert.IsType<AgentState.NotLaunched>(await spawn.InspectAsync(run, Op, None));
     }
 
     [Fact]

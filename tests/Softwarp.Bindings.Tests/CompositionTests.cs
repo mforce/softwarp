@@ -9,22 +9,25 @@ public sealed class CompositionTests : IDisposable
 {
     readonly string root = Directory.CreateTempSubdirectory("softwarp-config-").FullName;
     readonly IDisposable home;
-    string Config => Path.Combine(root, "cfg", "machine.json");
+    string Config => Path.Combine(root, "softwarp", "machine.json");
     string ClaudeInstall => Path.Combine(root, ".local", "share", "claude", "versions", "9.9.9");
     string CodexInstall => Path.Combine(root, ".npm-global", "codex", "vendor", "x86_64-unknown-linux-musl");
-    string ClaudeToken => Path.Combine(root, ".config", "softwarp", "claude-token");
-    string CodexKey => Path.Combine(root, ".config", "softwarp", "codex-key");
+    string Secrets => Path.GetDirectoryName(Config)!;
+    string ClaudeToken => Path.Combine(Secrets, "claude-token");
+    string ClaudeSpecToken => Path.Combine(Secrets, "claude-spec-token");
+    string CodexKey => Path.Combine(Secrets, "codex-key");
 
     public CompositionTests()
     {
         home = GitRemote.Planted(new Dictionary<string, string> { ["HOME"] = root });
-        Directory.CreateDirectory(Path.Combine(root, "cfg"));
+        Directory.CreateDirectory(Path.Combine(root, "softwarp"));
         foreach (var executable in new[] { ClaudeInstall, HarnessProfile.All[Harness.Codex].Executable(CodexInstall) })
         {
             Directory.CreateDirectory(Path.GetDirectoryName(executable)!);
             GitRemote.Script(executable, "#!/bin/sh\n");
         }
         Credential(ClaudeToken);
+        Credential(ClaudeSpecToken);
         Credential(CodexKey);
     }
 
@@ -44,7 +47,7 @@ public sealed class CompositionTests : IDisposable
             "cleanup": { "harness": "claude", "model": "claude-haiku-5", "effort": "low" }
           },
           "harnesses": {
-            "claude": { "install": "{{ClaudeInstall}}", "credential": "{{ClaudeToken}}" },
+            "claude": { "install": "{{ClaudeInstall}}", "credential": "{{ClaudeToken}}", "spec_credential": "{{ClaudeSpecToken}}" },
             "codex": { "install": "{{CodexInstall}}", "credential": "{{CodexKey}}" }
           },
           "runs": "/var/softwarp/runs",
@@ -70,6 +73,7 @@ public sealed class CompositionTests : IDisposable
         Assert.Equal(new AgentPin(Harness.Codex, "gpt-6-astra", "low"), config.Agents.Triage);
         Assert.Equal(new AgentPin(Harness.Claude, "claude-opus-5-5", "high"), config.Agents.Spec);
         Assert.Equal([Harness.Claude, Harness.Codex], config.Harnesses.Keys.Order());
+        Assert.Equal((ClaudeToken, ClaudeSpecToken), (config.Harnesses[Harness.Claude].Credential, config.Harnesses[Harness.Claude].SpecCredential));
     }
 
     [Fact]
@@ -111,15 +115,15 @@ public sealed class CompositionTests : IDisposable
     [Theory]
     [InlineData("data/runs")]
     [InlineData("data/slices")]
-    [InlineData("cfg")]
+    [InlineData("softwarp")]
     public void ToolchainAtAConfiguredStateDirectory_IsRefusedByBind(string directory)
     {
         var home = Directory.CreateTempSubdirectory("softwarp-home-").FullName;
         try
         {
-            foreach (var d in new[] { "data/runs", "data/slices", "cfg" }) Directory.CreateDirectory(Path.Combine(home, d));
+            foreach (var d in new[] { "data/runs", "data/slices", "softwarp" }) Directory.CreateDirectory(Path.Combine(home, d));
             using var environment = GitRemote.Planted(new Dictionary<string, string> { ["HOME"] = home });
-            var config = Path.Combine(home, "cfg", "machine.json");
+            var config = Path.Combine(home, "softwarp", "machine.json");
             File.WriteAllText(config, Valid.Replace("\"/var/softwarp/runs\"", $"\"{home}/data/runs\", \"slices\": \"{home}/data/slices\"")
                 .Replace("\"toolchains\": []", $"\"toolchains\": [\"{home}/{directory}\"]"));
             Assert.Contains($"toolchain '{home}/{directory}' overlaps {home}/{directory},", Assert.Throws<InvalidOperationException>(() => Composition.Bind(config)).Message);
@@ -137,7 +141,7 @@ public sealed class CompositionTests : IDisposable
     [InlineData("runs", ".softwarp/gates", ".softwarp/gates")]
     [InlineData("slices", ".softwarp/packages", ".softwarp/packages")]
     [InlineData("slices", ".softwarp/gates/slices", ".softwarp/gates")]
-    [InlineData("config", ".softwarp/packages/cfg", ".softwarp/packages")]
+    [InlineData("config", ".softwarp/packages/softwarp", ".softwarp/packages")]
     public void StateDirectoryThatOverlapsThePackageCacheOrTheGateScratch_IsRefusedByBind(string key, string directory, string shared)
     {
         var home = Directory.CreateTempSubdirectory("softwarp-home-").FullName;
@@ -145,7 +149,7 @@ public sealed class CompositionTests : IDisposable
         {
             using var environment = GitRemote.Planted(new Dictionary<string, string> { ["HOME"] = home });
             var path = Path.Combine(home, directory);
-            var config = Path.Combine(key == "config" ? path : Path.Combine(home, "cfg"), "machine.json");
+            var config = Path.Combine(key == "config" ? path : Path.Combine(home, "softwarp"), "machine.json");
             Directory.CreateDirectory(Path.GetDirectoryName(config)!);
             File.WriteAllText(config, key == "config" ? Valid : Valid.Replace("\"runs\": \"/var/softwarp/runs\"", $"\"{key}\": \"{path}\""));
             Assert.Contains($"'{path}' overlaps {Path.Combine(home, shared)}",
@@ -161,12 +165,12 @@ public sealed class CompositionTests : IDisposable
     [Theory]
     [InlineData("runs", "data/slices/runs")]
     [InlineData("runs", "data")]
-    [InlineData("config", "data/slices/cfg")]
+    [InlineData("config", "data/slices/softwarp")]
     public void RunStoreOrConfigThatOverlapsTheSlicesRoot_IsRefusedByBind(string key, string directory)
     {
         var path = Path.Combine(root, directory);
         var slices = Path.Combine(root, "data", "slices");
-        var config = Path.Combine(key == "config" ? path : Path.Combine(root, "cfg"), "machine.json");
+        var config = Path.Combine(key == "config" ? path : Path.Combine(root, "softwarp"), "machine.json");
         var runs = key == "runs" ? path : "/var/softwarp/runs";
         Directory.CreateDirectory(Path.GetDirectoryName(config)!);
         File.WriteAllText(config, Valid.Replace("\"runs\": \"/var/softwarp/runs\"", $"\"runs\": \"{runs}\", \"slices\": \"{slices}\""));
@@ -241,6 +245,67 @@ public sealed class CompositionTests : IDisposable
 
     string CodexSection => $",\n    \"codex\": {{ \"install\": \"{CodexInstall}\", \"credential\": \"{CodexKey}\" }}";
 
+    /// <summary>The spec agent sees the holdouts, so a role gets only the field made for it, and none stands in for another.</summary>
+    [Theory]
+    [InlineData("spec_credential", "the spec role runs on claude")]
+    [InlineData("credential", "the implement role runs on claude")]
+    public void RoleOnAHarnessWithoutTheCredentialFieldItNeeds_IsRefusedNamingTheHarnessAndTheField(string field, string role)
+    {
+        var file = field == "credential" ? ClaudeToken : ClaudeSpecToken;
+        Assert.Contains($"{role}, and harnesses.claude.{field} is missing", Refused(Valid.Replace($", \"{field}\": \"{file}\"", "")));
+    }
+
+    [Fact]
+    public void SpecOnCodexAndTheRestOnClaude_EachWithOnlyTheFieldItNeeds_IsAccepted()
+    {
+        File.WriteAllText(Config, Valid.Replace("\"triage\": { \"harness\": \"codex\"", "\"triage\": { \"harness\": \"claude\"")
+            .Replace("\"spec\": { \"harness\": \"claude\"", "\"spec\": { \"harness\": \"codex\"")
+            .Replace($", \"spec_credential\": \"{ClaudeSpecToken}\"", "").Replace($"\"credential\": \"{CodexKey}\"", $"\"spec_credential\": \"{CodexKey}\""));
+        var harnesses = Composition.Bind(Config).Config.Harnesses;
+        Assert.Equal(ClaudeToken, harnesses[Harness.Claude].Credential);
+        Assert.Null(harnesses[Harness.Claude].SpecCredential);
+        Assert.Null(harnesses[Harness.Codex].Credential);
+        Assert.Equal(CodexKey, harnesses[Harness.Codex].SpecCredential);
+    }
+
+    /// <summary>A role added later has to be given a field, or Bind fails for it at startup; it never gets the implementer's.</summary>
+    [Fact]
+    public void RoleWithNoCredentialField_ThrowsInsteadOfGettingTheImplementersCredential() =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HarnessInstall(ClaudeInstall, ClaudeToken, ClaudeSpecToken).CredentialFor((ActionKind)99));
+
+    /// <summary>One account for the spec agent and another agent would carry the holdouts from one to the other. The
+    /// message names both entries and never the content.</summary>
+    [Fact]
+    public void SpecCredentialThatIsTheCredentialFile_IsRefusedNamingBothEntries() =>
+        Assert.Contains("harnesses.claude.credential and harnesses.claude.spec_credential hold the same credential",
+            Refused(Valid.Replace($"\"spec_credential\": \"{ClaudeSpecToken}\"", $"\"spec_credential\": \"{ClaudeToken}\"")));
+
+    /// <summary>The launch script reads the file through `$(cat ...)`, which cuts a trailing newline, so a copy with one is
+    /// the same account.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("\n")]
+    public void CredentialInASecondFileWithTheSameContent_IsRefusedNamingBothEntries(string ending)
+    {
+        var content = File.ReadAllText(ClaudeSpecToken);
+        var copy = Credential(Path.Combine(Secrets, "copy"), content + ending);
+        var message = Refused(Valid.Replace($"\"credential\": \"{CodexKey}\"", $"\"credential\": \"{copy}\""));
+        Assert.Contains("harnesses.claude.spec_credential", message);
+        Assert.Contains("harnesses.codex.credential", message);
+        Assert.Contains("hold the same credential", message);
+        Assert.DoesNotContain(content, message);
+    }
+
+    /// <summary>The spec agent's credential on one harness against the implementer's on another: the entries sit apart in
+    /// the config, so the check compares every pair.</summary>
+    [Fact]
+    public void CredentialOfOneHarnessCopiedAsTheSpecCredentialOfAnother_IsRefusedNamingBothEntries()
+    {
+        var copy = Credential(Path.Combine(Secrets, "copy"), File.ReadAllText(ClaudeToken));
+        Assert.Contains("harnesses.claude.credential and harnesses.codex.spec_credential hold the same credential",
+            Refused(Valid.Replace($"\"credential\": \"{CodexKey}\"", $"\"credential\": \"{CodexKey}\", \"spec_credential\": \"{copy}\"")));
+    }
+
     [Theory]
     [InlineData("claude", "link", "resolves through a link")]
     [InlineData("claude", "directory", "is not a file")]
@@ -268,36 +333,65 @@ public sealed class CompositionTests : IDisposable
     [InlineData("empty", "is not a regular file with content")]
     [InlineData("fifo", "is not a regular file with content")]
     [InlineData("link", "resolves through a link")]
+    [InlineData("large", "cannot be read as a credential")]
+    [InlineData("json", "is not one token")]
+    [InlineData("words", "is not one token")]
+    [InlineData("blank", "is not one token")]
     [InlineData("outside", "is not inside the home")]
+    [InlineData("login", "is not inside the machine config's directory")]
     [InlineData("runs", "sits inside")]
-    [InlineData("toolchain", "sits inside")]
-    [InlineData("install", "sits inside")]
-    [InlineData("softwarp", "sits inside")]
     public void CredentialThatASandboxCouldShowOrAnotherUserCouldPlant_IsRefusedByBind(string kind, string reason)
     {
-        var path = Path.Combine(root, "credential");
-        var config = Valid.Replace("\"runs\": \"/var/softwarp/runs\"", $"\"runs\": \"{root}/runs\"")
-            .Replace("\"toolchains\": []", $"\"toolchains\": [\"{root}/tools\"]");
-        Directory.CreateDirectory(Path.Combine(root, "tools"));
+        var path = Path.Combine(Secrets, "credential");
+        var config = Valid.Replace("\"runs\": \"/var/softwarp/runs\"", $"\"runs\": \"{Secrets}/runs\"");
         switch (kind)
         {
             case "mode": File.WriteAllText(path, "secret"); File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead); break;
             case "empty": File.WriteAllText(path, ""); File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); break;
             case "fifo": using (var mkfifo = Process.Start("mkfifo", ["-m", "600", path])) mkfifo.WaitForExit(); break;
             case "link": File.CreateSymbolicLink(path, ClaudeToken); break;
+            case "large": Credential(path, new string('a', 5000)); break;
+            case "json": Credential(path, """{"claudeAiOauth":{"accessToken":"fake"}}"""); break;
+            case "words": Credential(path, "two words"); break;
+            case "blank": Credential(path, " \n"); break;
             case "outside": path = "/etc/hostname"; break;
-            case "runs": path = Credential(Path.Combine(root, "runs", "mforce", "credential")); break;
-            case "toolchain": path = Credential(Path.Combine(root, "tools", "credential")); break;
-            case "install": path = Credential(Path.Combine(CodexInstall, "credential")); break;
-            case "softwarp": path = Credential(Path.Combine(root, ".softwarp", "credential")); break;
+            case "login": path = Credential(Path.Combine(root, ".claude", ".credentials.json")); break;
+            case "runs": path = Credential(Path.Combine(Secrets, "runs", "mforce", "credential")); break;
         }
-        Assert.Contains($"credential '{path}' {reason}", Refused(config.Replace($"\"credential\": \"{ClaudeToken}\"", $"\"credential\": \"{path}\"")));
+        foreach (var (field, file) in new[] { ("credential", ClaudeToken), ("spec_credential", ClaudeSpecToken) })
+            Assert.Contains($"claude {field} '{path}' {reason}", Refused(config.Replace($"\"{field}\": \"{file}\"", $"\"{field}\": \"{path}\"")));
     }
 
-    static string Credential(string path)
+    /// <summary>A config directory under ~/.softwarp is bound whole, so every credential in it is refused.</summary>
+    [Fact]
+    public void ConfigDirectoryInsideSoftwarpsState_HasItsCredentialsRefused() =>
+        Assert.Contains($"sits inside {root}/.softwarp, which a sandbox binds",
+            Assert.Throws<InvalidOperationException>(() => Composition.Bind(ConfigWithCredentialsIn(Path.Combine(root, ".softwarp", "softwarp")))).Message);
+
+    /// <summary>A credential must sit in the config directory, so the directory must be softwarp's own: a machine.json in a
+    /// login's directory would admit the login beside it.</summary>
+    [Theory]
+    [InlineData(".claude")]
+    [InlineData(".codex")]
+    [InlineData(".config")]
+    public void ConfigInADirectoryNotNamedSoftwarp_IsRefusedWithItsCredentials(string directory) =>
+        Assert.Contains("must sit in a directory named softwarp",
+            Assert.Throws<InvalidOperationException>(() => Composition.Bind(ConfigWithCredentialsIn(Path.Combine(root, directory)))).Message);
+
+    /// <summary>Writes the valid config as machine.json in the directory, with its three credentials moved beside it, and returns its path.</summary>
+    string ConfigWithCredentialsIn(string directory)
+    {
+        var json = new[] { ClaudeToken, ClaudeSpecToken, CodexKey }.Aggregate(Valid, (text, file) => text.Replace(file, Credential(Path.Combine(directory, Path.GetFileName(file)))));
+        var config = Path.Combine(directory, "machine.json");
+        File.WriteAllText(config, json);
+        return config;
+    }
+
+    /// <summary>A credential file whose content is its own path, so two files are two accounts.</summary>
+    static string Credential(string path, string? content = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, "secret");
+        File.WriteAllText(path, content ?? path);
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         return path;
     }
@@ -375,7 +469,7 @@ public sealed class ToolchainTests : IDisposable
     public void BindRefusesAConfigWhoseToolchainIsASecretLocation_NamingTheEntry()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var config = Path.Combine(root, "machine.json");
+        var config = Path.Combine(Directory.CreateDirectory(Path.Combine(root, "softwarp")).FullName, "machine.json");
         File.WriteAllText(config, $$"""
             {
               "maintainer_account_id": "12345",

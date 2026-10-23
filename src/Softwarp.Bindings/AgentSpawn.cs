@@ -8,9 +8,23 @@ namespace Softwarp.Bindings;
 /// <summary>A harness on this machine.</summary>
 /// <param name="Install">What every agent of the harness is shown, read-only at its own path: Claude's native binary, or
 /// Codex's vendor directory for this platform, which holds bin/codex and the tools Codex runs.</param>
-/// <param name="Credential">The file with the harness's dedicated, revocable credential: a token from
-/// `claude setup-token`, or an OpenAI API key with a spend limit. Never the maintainer's own login.</param>
-public sealed record HarnessInstall(string Install, string Credential);
+/// <param name="Credential">The file with the dedicated, revocable credential of the triage, implement and cleanup agents on
+/// this harness: a token from `claude setup-token`, or an OpenAI API key with a spend limit. Never the maintainer's own
+/// login. Null when no such role runs on the harness.</param>
+/// <param name="SpecCredential">The same for the spec agents, in a file of its own and with content no other credential
+/// has, so the holdouts the spec agent sees have no shared credential to reach the implementer by. Bind compares files,
+/// not accounts. Null when no spec role runs on the harness.</param>
+public sealed record HarnessInstall(string Install, string? Credential = null, string? SpecCredential = null)
+{
+    /// <summary>The machine config field and file of the credential the role's agent gets; there is no fallback from one
+    /// field to the other. Every role is named, so a role added later fails at startup until it is given a field.</summary>
+    internal (string Field, string? File) CredentialFor(ActionKind role) => role switch
+    {
+        ActionKind.Spec => ("spec_credential", SpecCredential),
+        ActionKind.Triage or ActionKind.Implement or ActionKind.Cleanup => ("credential", Credential),
+        _ => throw new ArgumentOutOfRangeException(nameof(role)),
+    };
+}
 
 /// <summary>What softwarp knows about one harness. Each harness's command line sets the model, effort and permission
 /// mode explicitly; turns its own sandbox off, since the service's sandbox is the boundary; loads no user or repository
@@ -53,8 +67,9 @@ sealed record HarnessProfile(string CredentialVariable, bool InstallIsFile, Immu
 /// softwarp's sandbox profile with the network on (<see cref="Sandbox.StartAsync"/>), around the role's harness with the
 /// harness's own sandbox off. The agent is shown its worktree with the real .git (writable for the implement and
 /// cleanup agents, a throwaway overlay for triage and spec, <see cref="Mount"/>), its own io directory and, read-only,
-/// its harness and that harness's credential. Its log lies outside the sandbox. An ExecStartPre stamp in the operation's
-/// directory, which no agent sees, tells an agent that exited from one that never started.</summary>
+/// its harness and the credential its role needs (<see cref="HarnessInstall.CredentialFor"/>). Its log lies outside the
+/// sandbox. An ExecStartPre stamp in the operation's directory, which no agent sees, tells an agent that exited from one
+/// that never started.</summary>
 /// <remarks>The credential reaches the harness through the one variable the harness reads it from, set by a shell in
 /// the sandbox, so it is on no command line and in no environment of softwarp's. A hijacked agent can still read it, from
 /// the bound file or from the harness's /proc entry, so each credential is dedicated and revocable.</remarks>
@@ -95,17 +110,21 @@ public sealed class AgentSpawn(Sandbox sandbox, RunStore store, IReadOnlyDiction
         if (File.Exists(stamp)) return Handle(unit, brief);
         var install = harnesses.TryGetValue(brief.Agent.Harness, out var configured) ? configured
             : throw new InvalidOperationException($"the run pins {brief.Agent.Harness} for {brief.Role}, and the machine config has no such harness");
+        var (field, credential) = install.CredentialFor(brief.Role);
+        if (credential is null)
+            throw new InvalidOperationException(
+                $"the run pins {brief.Agent.Harness} for {brief.Role}, and harnesses.{Composition.Name(brief.Agent.Harness)}.{field} is missing from the machine config");
         var harness = HarnessProfile.All[brief.Agent.Harness];
         var io = Path.GetDirectoryName(brief.OutputFile)!;
-        var mount = Mount(brief.Role);
-        // A sandbox this machine cannot make (no bwrap, a worktree that cannot be bound, or an overlay that needs bwrap 0.10
-        // or later and overlayfs in user namespaces) would start, fail at once and spend the attempt, so it is tried first.
-        if (await sandbox.ProblemAsync(workspace.Path, mount, ct) is { } problem)
-            throw new InvalidOperationException($"the {brief.Role} agent was not started: its sandbox cannot start here: {problem}");
-        var profile = new Profile(workspace.Path, mount,
+        var profile = new Profile(workspace.Path, Mount(brief.Role),
             new CommandSpec("/bin/sh", ["-c", Launch, "softwarp-agent", harness.CredentialVariable, harness.Executable(install.Install),
                 .. harness.Arguments(brief, workspace)]),
-            Identity, ["--ro-bind", install.Install, install.Install, "--ro-bind", install.Credential, Credential, "--bind", io, io]);
+            Identity, ["--ro-bind", install.Install, install.Install, "--ro-bind", credential, Credential, "--bind", io, io]);
+        // A sandbox this machine cannot make (no bwrap, a worktree, harness, credential or io directory that cannot be bound,
+        // or an overlay that needs bwrap 0.10 or later and overlayfs in user namespaces) would start, fail at once and spend
+        // the attempt, so the agent's own profile is tried first.
+        if (await sandbox.ProblemAsync(profile, ct) is { } problem)
+            throw new InvalidOperationException($"the {brief.Role} agent was not started: its sandbox cannot start here: {problem}");
         // An agent gets twice its expected time, then systemd stops it, and kills what ignores the stop.
         var start = await sandbox.StartAsync(new Service(unit, $"softwarp {brief.Role} agent", 2 * brief.ExpectedDuration, brief.LogFile, stamp),
             profile, ct);
@@ -138,18 +157,15 @@ public sealed class AgentSpawn(Sandbox sandbox, RunStore store, IReadOnlyDiction
 
     /// <summary>Codex's output is the file its -o wrote. Claude's is the structured output of the last `result` event in
     /// its log, which lies outside the sandbox and is read here on the host; no file the agent wrote ever stands in for it.
-    /// Nothing is written.</summary>
+    /// The log tail bounds its size, and the factory checks that against its cap. Nothing is written.</summary>
     /// <remarks>The harness's stdout and stderr are open on the log, so the agent can still append to or truncate it: like
     /// the output file, what it holds is the agent's to choose, and the role's contract is the check.</remarks>
     public byte[] Output(RunManifest run, OperationId operation)
     {
         var brief = store.Brief(run.Item.Id, operation);
         if (!HarnessProfile.All[brief.Agent.Harness].OutputInLog) return UntrustedFile.Read(brief.OutputFile, Factory.MaxOutputBytes);
-        var output = LastResult(UntrustedFile.Tail(brief.LogFile, ResultTailBytes))
-            ?? throw new InvalidDataException("the harness's last result event holds no structured output");
-        var bytes = Encoding.UTF8.GetBytes(output);
-        return bytes.Length <= Factory.MaxOutputBytes ? bytes
-            : throw new InvalidDataException($"the harness's structured output is over {Factory.MaxOutputBytes} bytes");
+        return Encoding.UTF8.GetBytes(LastResult(UntrustedFile.Tail(brief.LogFile, ResultTailBytes))
+            ?? throw new InvalidDataException($"no result event with structured output among the last {ResultCandidates} JSON lines of the harness's log"));
     }
 
     /// <summary>The implementer and the cleanup agent work in commits. Triage writes nothing it keeps, and the spec agent
