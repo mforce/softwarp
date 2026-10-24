@@ -161,6 +161,19 @@ public sealed class UntrustedFileTests : IDisposable
     public void ShortLog_IsTailedWhole() =>
         Assert.Equal("exit 1\n", UntrustedFile.Tail(Write("Build.log", "exit 1\n"u8.ToArray()), 4096));
 
+    [Fact]
+    public void ShortLogWithAHugeCap_AllocatesForTheFileNotTheCap()
+    {
+        var log = Write("Build.log", "exit 1\n"u8.ToArray());
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var tail = UntrustedFile.Tail(log, 256 << 20);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal("exit 1\n", tail);
+        Assert.InRange(allocated, 0, 1 << 20);
+    }
+
     [Theory]
     [InlineData("plain text, ünïcode and emoji 🙂", false, "plain text, ünïcode and emoji 🙂")]
     [InlineData("a\nb\tc\rd\u001be\u007ff\u0085g", false, "a\\u000ab\\u0009c\\u000dd\\u001be\\u007ff\\u0085g")]

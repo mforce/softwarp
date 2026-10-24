@@ -37,10 +37,21 @@ public static class Validation
         foreach (var blocker in t.BlockedBy.Where(b => !tickets.Contains(b)))
             errors.Add($"ticket '{Quote(t.Id)}' is blocked by unknown ticket '{Quote(blocker)}'");
 
+        // Kahn's algorithm: a ticket is ordered once every blocker it names is (an unknown one is reported above). Each
+        // ticket and each blocking edge is visited once.
+        var known = spec.Tickets.Select(t => t.BlockedBy.Where(tickets.Contains).ToArray()).ToArray();
+        var pending = known.Select(blockers => blockers.Length).ToArray();
+        var dependents = known.SelectMany((blockers, i) => blockers.Select(b => (Blocker: b, Dependent: i)))
+            .ToLookup(edge => edge.Blocker, edge => edge.Dependent);
         var ordered = new HashSet<string>();
-        while (spec.Tickets.FirstOrDefault(t => !ordered.Contains(t.Id)
-                   && t.BlockedBy.All(b => ordered.Contains(b) || !tickets.Contains(b))) is { } next)
-            ordered.Add(next.Id);
+        var ready = new Queue<int>(Enumerable.Range(0, pending.Length).Where(i => pending[i] == 0));
+        while (ready.TryDequeue(out var next))
+        {
+            var id = spec.Tickets[next].Id;
+            if (!ordered.Add(id)) continue;
+            foreach (var dependent in dependents[id])
+                if (--pending[dependent] == 0) ready.Enqueue(dependent);
+        }
         var cyclic = spec.Tickets.Select(t => t.Id).Where(id => !ordered.Contains(id)).ToList();
         Require(cyclic.Count == 0, $"tickets {Quote(string.Join(", ", cyclic))} are in or behind a blocking cycle");
 

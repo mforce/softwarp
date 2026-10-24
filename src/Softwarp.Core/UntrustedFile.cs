@@ -29,8 +29,9 @@ public static class UntrustedFile
     {
         using var stream = Open(path);
         if (stream is null) return "";
-        stream.Seek(Math.Max(0, stream.Length - maxBytes), SeekOrigin.Begin);
-        var buffer = new byte[maxBytes];
+        var length = stream.Length;
+        stream.Seek(Math.Max(0, length - maxBytes), SeekOrigin.Begin);
+        var buffer = new byte[Math.Min(maxBytes, length)];
         return Encoding.UTF8.GetString(buffer, 0, stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false));
     }
 

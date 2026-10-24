@@ -87,6 +87,19 @@ public sealed class RunStoreTests : IDisposable
         Assert.NotNull(again);
     }
 
+    /// <summary>A lease reads the manifest when it opens; one that fails to must not keep the lock it took.</summary>
+    [Fact]
+    public void LeaseThatCannotBeOpened_ReleasesTheLock()
+    {
+        var manifestPath = Path.Combine(Directory.CreateDirectory(store.Directory(Item)).FullName, "manifest.json");
+        File.WriteAllText(manifestPath, "not a manifest");
+        Assert.ThrowsAny<System.Text.Json.JsonException>(() => store.TryLock(Item));
+
+        File.Delete(manifestPath);
+        using var again = store.TryLock(Item);
+        Assert.NotNull(again);
+    }
+
     [Fact]
     public void OtherItems_DoNotShareALock()
     {

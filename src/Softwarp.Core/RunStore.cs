@@ -149,15 +149,24 @@ public sealed class RunStore(string root)
     {
         var directory = Directory(item);
         System.IO.Directory.CreateDirectory(directory);
+        FileStream lockFile;
         try
         {
             // FileShare.None takes flock(LOCK_EX | LOCK_NB) on Unix; the OS drops it when the process dies.
-            var lockFile = new FileStream(Path.Combine(directory, "lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-            return new RunLease(directory, lockFile);
+            lockFile = new FileStream(Path.Combine(directory, "lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         }
         catch (IOException)
         {
             return null;
+        }
+        try
+        {
+            return new RunLease(directory, lockFile);
+        }
+        catch
+        {
+            lockFile.Dispose();
+            throw;
         }
     }
 

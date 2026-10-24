@@ -19,6 +19,27 @@ public class ValidateTests
         Tickets = [new("T1", "a", ["T2"]), new("T2", "b", ["T1"])],
     }));
 
+    /// <summary>Each ticket reads <c>id[blockers]</c>. Duplicate ids and a blocker named twice must not free a ticket early.</summary>
+    [Theory]
+    [InlineData("T1[T2] T2[T1] T3[] T4[T2,T3] T5[T3]", "tickets T1, T2, T4 are in or behind a blocking cycle")]
+    [InlineData("A[] A[] B[A,C] C[B]", "ticket id 'A' is not unique; tickets B, C are in or behind a blocking cycle")]
+    [InlineData("A[] B[A,A,C] C[C]", "tickets B, C are in or behind a blocking cycle")]
+    public void TicketsInOrBehindACycle_AreNamedAndTheRestAreNot(string tickets, string expected) => Assert.Equal(expected,
+        string.Join("; ", Validation.Validate(Valid with
+        {
+            Tickets = [.. tickets.Split(' ').Select(t => t.Split('[', ']')).Select(p => new Ticket(p[0], "x", [.. p[1].Split(',', StringSplitOptions.RemoveEmptyEntries)]))],
+        })));
+
+    /// <summary>Listed last-blocker-first, the worst order for a check that rescans the list for the next ticket.</summary>
+    [Fact]
+    public async Task LongChainOfTickets_IsCheckedInLinearTime()
+    {
+        var chain = Enumerable.Range(0, 50_000).Reverse()
+            .Select(i => new Ticket($"T{i}", "step", i == 0 ? [] : [$"T{i - 1}"])).ToImmutableArray();
+
+        Assert.Empty(await Task.Run(() => Validation.Validate(Valid with { Tickets = chain })).WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
     [Fact]
     public void SelfBlockingTicket_IsRejected() => Assert.Single(Validation.Validate(Valid with
     {
