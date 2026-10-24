@@ -119,7 +119,7 @@ public sealed class AgentSpawn(Sandbox sandbox, RunStore store, IReadOnlyDiction
         var profile = new Profile(workspace.Path, Mount(brief.Role),
             new CommandSpec("/bin/sh", ["-c", Launch, "softwarp-agent", harness.CredentialVariable, harness.Executable(install.Install),
                 .. harness.Arguments(brief, workspace)]),
-            Identity, ["--ro-bind", install.Install, install.Install, "--ro-bind", credential, Credential, "--bind", io, io]);
+            Identity, [new PathBind.ReadOnly(install.Install, install.Install), new PathBind.ReadOnly(credential, Credential), new PathBind.Writable(io)]);
         // A sandbox this machine cannot make (no bwrap, a worktree, harness, credential or io directory that cannot be bound,
         // or an overlay that needs bwrap 0.10 or later and overlayfs in user namespaces) would start, fail at once and spend
         // the attempt, so the agent's own profile is tried first.

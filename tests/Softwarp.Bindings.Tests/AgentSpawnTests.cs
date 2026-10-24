@@ -442,7 +442,7 @@ public sealed class AgentSpawnTests : SpawnFixture
         ], File.ReadAllText(argv).Split('\0'));
     }
 
-    /// <summary>The spec agent sees the holdouts, so it never gets the account the implementer runs on.</summary>
+    /// <summary>The spec agent sees the holdouts, so it is bound its own credential and every other role the other one.</summary>
     [Theory]
     [InlineData(ActionKind.Spec)]
     [InlineData(ActionKind.Triage)]
@@ -461,6 +461,22 @@ public sealed class AgentSpawnTests : SpawnFixture
         var log = await RunToEndAsync(Spawn(), op, brief);
         Assert.Contains("bound own", log);
         Assert.DoesNotContain("bound other", log);
+    }
+
+    /// <summary>The harness and the credential are shown read-only, so an agent cannot rewrite the executable a later agent
+    /// runs, or the file it draws its credential from.</summary>
+    [Fact]
+    public async Task Agent_CannotWriteItsHarnessOrItsCredential()
+    {
+        Fake(Harness.Claude, $$"""
+            echo x 2>/dev/null >> '{{ClaudeInstall}}' && echo "wrote harness"
+            echo x 2>/dev/null >> /run/softwarp/credential && echo "wrote credential"
+            echo finished
+            """);
+
+        var log = await RunToEndAsync(Spawn(), Op, Brief(Op));
+        Assert.Contains("finished", log);
+        Assert.DoesNotContain("wrote", log);
     }
 
     /// <summary>A run pins its roles' harnesses at intake and the machine config may change after, so the spawn checks the

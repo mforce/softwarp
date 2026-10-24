@@ -108,7 +108,7 @@ public sealed class GitIsolation(string slices, Func<ItemId, string> remote, San
         var objects = Path.Combine(trusted, "objects");
         var output = new Captured("the clean check");
         var check = output.Result(await sandbox.RunAsync(new Profile(worktree, new WorktreeMount.ReadOnly(),
-            new CommandSpec("sh", ["-c", CleanScript, "clean", head, worktree, objects]), Binds: ["--ro-bind", objects, objects]),
+            new CommandSpec("sh", ["-c", CleanScript, "clean", head, worktree, objects]), Binds: [new PathBind.ReadOnly(objects, objects)]),
             output, timeout, ct), timeout);
         var verdict = check.Output.TrimEnd('\n');
         if (check.ExitCode != 0 || verdict != "clean" && !verdict.StartsWith("dirty: ", StringComparison.Ordinal))

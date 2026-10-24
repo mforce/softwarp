@@ -60,12 +60,32 @@ internal abstract record WorktreeMount
     }
 }
 
+/// <summary>A path a profile shows the sandbox besides the worktree. Only <see cref="Sandbox"/> turns it into bwrap
+/// arguments.</summary>
+internal abstract record PathBind
+{
+    private PathBind() { }
+
+    /// <summary>The source, read-only, at the target.</summary>
+    public sealed record ReadOnly(string Source, string Target) : PathBind;
+
+    /// <summary>The path, writable, at its own path.</summary>
+    public sealed record Writable(string Path) : PathBind;
+
+    internal IEnumerable<string> Args() => this switch
+    {
+        ReadOnly bind => ["--ro-bind", bind.Source, bind.Target],
+        Writable bind => ["--bind", bind.Path, bind.Path],
+        _ => throw new UnreachableException($"no binds for {this}"),
+    };
+}
+
 /// <summary>One sandbox: the worktree as the mount shows it, the command run there, and what else it gets. The launch
 /// decides the network: a scope is always offline, an agent's service always online.</summary>
 /// <param name="Environment">Variables on top of the sandbox's own.</param>
-/// <param name="Binds">bwrap bind arguments on top of the worktree's.</param>
+/// <param name="Binds">Paths on top of the worktree's.</param>
 internal sealed record Profile(string Worktree, WorktreeMount Mount, CommandSpec Command,
-    IReadOnlyList<(string Name, string Value)>? Environment = null, IReadOnlyList<string>? Binds = null);
+    IReadOnlyList<(string Name, string Value)>? Environment = null, IReadOnlyList<PathBind>? Binds = null);
 
 /// <summary>A transient user service that outlives softwarp: its unit name, its description in `systemctl list-units`,
 /// the time systemd lets it run, the log its stdout and stderr append to, and the stamp its ExecStartPre touches.</summary>
@@ -224,7 +244,7 @@ public sealed class Sandbox(GateLimits limits, string home, string systemdRun = 
             .. network ? Array.Empty<string>() : ["--ro-bind-try", Packages, Path.Combine(home, ".nuget", "packages")],
             .. limits.Toolchains.SelectMany(toolchain => new[] { "--ro-bind", toolchain, toolchain }),
             .. profile.Mount.Binds(profile.Worktree),
-            .. profile.Binds ?? [],
+            .. (profile.Binds ?? []).SelectMany(bind => bind.Args()),
             "--chdir", profile.Worktree, "--", profile.Command.Executable, .. profile.Command.Arguments,
         ];
     }

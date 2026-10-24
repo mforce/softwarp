@@ -193,6 +193,13 @@ public sealed class CompositionTests : IDisposable
     [Theory]
     [InlineData("\"runs\": \"/var/softwarp/runs\"", "\"runs\": \"relative/runs\"", "every path must be absolute")]
     [InlineData("\"toolchains\": []", "\"toolchains\": [\"nvm/node\"]", "every path must be absolute")]
+    // A '..' after a link would hide the link from the link walk, which reads the path as text.
+    [InlineData("\"runs\": \"/var/softwarp/runs\"", "\"runs\": \"/var/link/../runs\"", NormalForm)]
+    [InlineData("\"runs\": \"/var/softwarp/runs\"", "\"runs\": \"/var/./runs\"", NormalForm)]
+    [InlineData("\"runs\": \"/var/softwarp/runs\"", "\"runs\": \"/var//runs\"", NormalForm)]
+    [InlineData("\"claude\": { \"install\": \"/", "\"claude\": { \"install\": \"//", NormalForm)]
+    [InlineData("\"credential\": \"/", "\"credential\": \"//", NormalForm)]
+    [InlineData("\"spec_credential\": \"/", "\"spec_credential\": \"//", NormalForm)]
     [InlineData("\"maintainer_account_id\": \"12345\"", "\"maintainer_account_id\": \"\"", "the maintainer account id must not be empty")]
     [InlineData("\"build_timeout\": \"00:30:00\"", "\"build_timeout\": \"00:00:00\"", "build_timeout and targeted_tests_timeout must be positive")]
     [InlineData("\"memory_max\": \"8G\"", "\"memory_max\": \"8G -p Delegate=yes\"", "memory_max must be a systemd size such as 8G")]
@@ -209,6 +216,8 @@ public sealed class CompositionTests : IDisposable
         Assert.Contains(from, Valid);
         Assert.Equal($"{Config}: {rule}", Refused(Valid.Replace(from, to)));
     }
+
+    const string NormalForm = "every path must be in normal form, with no '.', '..' or '//'";
 
     [Fact]
     public void ConfigThatBreaksSeveralRules_NamesEach() =>
@@ -273,15 +282,15 @@ public sealed class CompositionTests : IDisposable
     public void RoleWithNoCredentialField_ThrowsInsteadOfGettingTheImplementersCredential() =>
         Assert.Throws<ArgumentOutOfRangeException>(() => new HarnessInstall(ClaudeInstall, ClaudeToken, ClaudeSpecToken).CredentialFor((ActionKind)99));
 
-    /// <summary>One account for the spec agent and another agent would carry the holdouts from one to the other. The
-    /// message names both entries and never the content.</summary>
+    /// <summary>The same file or content for the spec agent and another agent would carry the holdouts from one to the
+    /// other. The message names both entries and never the content.</summary>
     [Fact]
     public void SpecCredentialThatIsTheCredentialFile_IsRefusedNamingBothEntries() =>
         Assert.Contains("harnesses.claude.credential and harnesses.claude.spec_credential hold the same credential",
             Refused(Valid.Replace($"\"spec_credential\": \"{ClaudeSpecToken}\"", $"\"spec_credential\": \"{ClaudeToken}\"")));
 
-    /// <summary>The launch script reads the file through `$(cat ...)`, which cuts a trailing newline, so a copy with one is
-    /// the same account.</summary>
+    /// <summary>The launch script reads the file through `$(cat ...)`, which cuts a trailing newline, so a copy with one has
+    /// the same content.</summary>
     [Theory]
     [InlineData("")]
     [InlineData("\n")]
@@ -330,20 +339,23 @@ public sealed class CompositionTests : IDisposable
 
     [Theory]
     [InlineData("mode", "does not have mode 0600")]
-    [InlineData("empty", "is not a regular file with content")]
-    [InlineData("fifo", "is not a regular file with content")]
+    [InlineData("empty", "cannot be read as a credential")]
+    [InlineData("fifo", "cannot be read as a credential")]
     [InlineData("link", "resolves through a link")]
     [InlineData("large", "cannot be read as a credential")]
     [InlineData("json", "is not one token")]
     [InlineData("words", "is not one token")]
     [InlineData("blank", "is not one token")]
+    [InlineData("nul", "is not one token")]
+    [InlineData("url", "is not one token")]
+    [InlineData("leading", "is not one token")]
+    [InlineData("crlf", "is not one token")]
+    [InlineData("jwt", "is not one token")]
     [InlineData("outside", "is not inside the home")]
     [InlineData("login", "is not inside the machine config's directory")]
-    [InlineData("runs", "sits inside")]
     public void CredentialThatASandboxCouldShowOrAnotherUserCouldPlant_IsRefusedByBind(string kind, string reason)
     {
         var path = Path.Combine(Secrets, "credential");
-        var config = Valid.Replace("\"runs\": \"/var/softwarp/runs\"", $"\"runs\": \"{Secrets}/runs\"");
         switch (kind)
         {
             case "mode": File.WriteAllText(path, "secret"); File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead); break;
@@ -354,19 +366,61 @@ public sealed class CompositionTests : IDisposable
             case "json": Credential(path, """{"claudeAiOauth":{"accessToken":"fake"}}"""); break;
             case "words": Credential(path, "two words"); break;
             case "blank": Credential(path, " \n"); break;
+            case "nul": Credential(path, "sk-fake\0"); break; // the launch script's shell drops the NUL, so it would match a token without it
+            case "url": Credential(path, "https://user:ghp_fake@github.com"); break; // a ~/.git-credentials entry
+            case "leading": Credential(path, " sk-fake"); break; // `$(cat ...)` keeps it, so the harness would get a token that is not the one checked
+            case "crlf": Credential(path, "sk-fake\r\n"); break; // `$(cat ...)` cuts the newline only
+            case "jwt": Credential(path, "a.b/c+d="); break; // a JWT or base64 value: characters the allow-list leaves out
             case "outside": path = "/etc/hostname"; break;
             case "login": path = Credential(Path.Combine(root, ".claude", ".credentials.json")); break;
-            case "runs": path = Credential(Path.Combine(Secrets, "runs", "mforce", "credential")); break;
         }
         foreach (var (field, file) in new[] { ("credential", ClaudeToken), ("spec_credential", ClaudeSpecToken) })
-            Assert.Contains($"claude {field} '{path}' {reason}", Refused(config.Replace($"\"{field}\": \"{file}\"", $"\"{field}\": \"{path}\"")));
+            Assert.Contains($"claude {field} '{path}' {reason}", Refused(Valid.Replace($"\"{field}\": \"{file}\"", $"\"{field}\": \"{path}\"")));
     }
 
-    /// <summary>A config directory under ~/.softwarp is bound whole, so every credential in it is refused.</summary>
+    /// <summary>Sandboxes are bound to ~/.softwarp's package cache and scratch, so no credential may sit in it.</summary>
     [Fact]
-    public void ConfigDirectoryInsideSoftwarpsState_HasItsCredentialsRefused() =>
-        Assert.Contains($"sits inside {root}/.softwarp, which a sandbox binds",
-            Assert.Throws<InvalidOperationException>(() => Composition.Bind(ConfigWithCredentialsIn(Path.Combine(root, ".softwarp", "softwarp")))).Message);
+    public void ConfigDirectoryInsideSoftwarpsState_IsRefusedByBind()
+    {
+        var directory = Path.Combine(root, ".softwarp", "softwarp");
+        Assert.Contains($"the machine config's directory '{directory}' overlaps {root}/.softwarp, which a sandbox binds",
+            Assert.Throws<InvalidOperationException>(() => Composition.Bind(ConfigWithCredentialsIn(directory))).Message);
+    }
+
+    /// <summary>Sandboxes are bound to the run store's io directories, so no credential may sit in it, and the run store may
+    /// not sit in the config's directory.</summary>
+    [Theory]
+    [InlineData("softwarp/runs")]
+    [InlineData("softwarp")]
+    public void RunStoreThatOverlapsTheConfigDirectory_IsRefusedByBind(string directory)
+    {
+        var runs = Path.Combine(root, directory);
+        Assert.Contains($"the machine config's directory '{Secrets}' overlaps {runs}, which a sandbox binds",
+            Refused(Valid.Replace("\"/var/softwarp/runs\"", $"\"{runs}\"")));
+    }
+
+    /// <summary>The overlap rules compare path strings, so a link would hide an overlap: a sandbox could bind the config's
+    /// directory, and every credential in it, through a state directory. The rows link the package cache, the scratch,
+    /// ~/.softwarp, and a directory that holds the run store or the slices root.</summary>
+    [Theory]
+    [InlineData(".softwarp/packages", ".softwarp/packages")]
+    [InlineData(".softwarp/gates", ".softwarp/gates")]
+    [InlineData(".softwarp", ".softwarp/packages")]
+    [InlineData("state", "state/runs")]
+    [InlineData("state", "state/slices")]
+    public void StateDirectoryThroughALink_IsRefusedByBind(string link, string directory)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(root, link))!);
+        File.CreateSymbolicLink(Path.Combine(root, link), Secrets);
+        var path = Path.Combine(root, directory);
+        var json = Path.GetFileName(directory) switch
+        {
+            "runs" => Valid.Replace("/var/softwarp/runs", path),
+            "slices" => Valid.Replace("\"runs\":", $"\"slices\": \"{path}\", \"runs\":"),
+            _ => Valid,
+        };
+        Assert.Contains($"'{path}' resolves through the link {Path.Combine(root, link)}; softwarp's state directories may not be links", Refused(json));
+    }
 
     /// <summary>A credential must sit in the config directory, so the directory must be softwarp's own: a machine.json in a
     /// login's directory would admit the login beside it.</summary>
@@ -387,11 +441,11 @@ public sealed class CompositionTests : IDisposable
         return config;
     }
 
-    /// <summary>A credential file whose content is its own path, so two files are two accounts.</summary>
+    /// <summary>A credential file whose content is a random token, so two files differ in content.</summary>
     static string Credential(string path, string? content = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, content ?? path);
+        File.WriteAllText(path, content ?? $"sk-{Guid.NewGuid():N}");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         return path;
     }
